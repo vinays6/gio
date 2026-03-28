@@ -38,6 +38,30 @@ export function useGioSession({
     latestScreenshotRef.current = latestScreenshot
   }, [latestScreenshot])
 
+  // Single helper for all clipboard write attempts.
+  // Tries the Clipboard API first, falls back to execCommand.
+  // Clears pendingClipboardWriteRef on success so retries don't duplicate.
+  const writeToClipboard = async (content: string) => {
+    try {
+      await navigator.clipboard.writeText(content)
+      pendingClipboardWriteRef.current = null
+      console.log('[Gio] Clipboard written, length:', content.length)
+      return
+    } catch { /* fall through to execCommand */ }
+    try {
+      const ta = document.createElement('textarea')
+      ta.value = content
+      ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none'
+      document.body.appendChild(ta)
+      ta.focus()
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+      pendingClipboardWriteRef.current = null
+      console.log('[Gio] Clipboard written via execCommand, length:', content.length)
+    } catch { /* both paths failed — content stays in pendingClipboardWriteRef for retry */ }
+  }
+
   const scheduleGioAudioChunk = async (base64Data: string, mimeType?: string) => {
     if (!base64Data) return
 
@@ -74,25 +98,13 @@ export function useGioSession({
   }
 
   const endGioSession = useCallback(async () => {
-    if (!isGioActiveRef.current && !gioSessionRef.current && !gioMicStreamRef.current) return
-
+    // Always attempt clipboard write first — this runs with a user gesture
+    // when the user taps stop, which is the most reliable write opportunity.
     if (pendingClipboardWriteRef.current) {
-      const toWrite = pendingClipboardWriteRef.current
-      pendingClipboardWriteRef.current = null
-      try {
-        await navigator.clipboard.writeText(toWrite)
-        console.log('[Gio] Clipboard written on session end (user gesture), length:', toWrite.length)
-      } catch {
-        try {
-          const ta = document.createElement('textarea')
-          ta.value = toWrite
-          ta.style.cssText = 'position:fixed;opacity:0;pointer-events:none'
-          document.body.appendChild(ta); ta.focus(); ta.select()
-          document.execCommand('copy')
-          document.body.removeChild(ta)
-        } catch { /* ignore */ }
-      }
+      await writeToClipboard(pendingClipboardWriteRef.current)
     }
+
+    if (!isGioActiveRef.current && !gioSessionRef.current && !gioMicStreamRef.current) return
 
     isGioActiveRef.current = false
     setIsGioActive(false)
@@ -131,6 +143,12 @@ export function useGioSession({
     if (!apiKey) {
       setGioError('No API key configured')
       return
+    }
+
+    // Attempt to flush any pending clipboard write from the previous session
+    // before clearing it — starting a new session is a user gesture.
+    if (pendingClipboardWriteRef.current) {
+      void writeToClipboard(pendingClipboardWriteRef.current)
     }
 
     gioTranscriptRef.current = ''
@@ -198,14 +216,10 @@ export function useGioSession({
                 if (content) {
                   setClipboardContent(content)
                   pendingClipboardWriteRef.current = content
-                  console.log('[Gio] saveToClipboard called, length:', content.length)
-                  // Attempt immediate write — succeeds if the user gesture window is still open
-                  navigator.clipboard.writeText(content).then(() => {
-                    pendingClipboardWriteRef.current = null
-                    console.log('[Gio] Clipboard written immediately')
-                  }).catch(() => {
-                    // Falls back to deferred write on next user gesture (endGioSession / copy button)
-                  })
+                  // Try immediately — works if the page has focus (tab is active).
+                  // If it fails, pendingClipboardWriteRef stays set for retry via
+                  // onclose, endGioSession, or the window focus listener.
+                  void writeToClipboard(content)
                 }
                 try {
                   gioSessionRef.current?.sendToolResponse({
@@ -235,7 +249,10 @@ export function useGioSession({
               fadeVolume(1.0, 800)
               isGioActiveRef.current = false
               setIsGioActive(false)
-              setGioError('Connection lost')
+            }
+            // Session closed (naturally or otherwise) — try to flush any pending clipboard write.
+            if (pendingClipboardWriteRef.current) {
+              void writeToClipboard(pendingClipboardWriteRef.current)
             }
           },
         },
@@ -359,6 +376,19 @@ export function useGioSession({
       recognition.onend = null
       try { recognition.stop() } catch { }
     }
+  }, [])
+
+  // Retry clipboard write whenever the main page regains focus.
+  // This is the key fallback for when the user is working in the PiP
+  // and the main page wasn't focused when saveToClipboard fired.
+  useEffect(() => {
+    const onFocus = () => {
+      if (pendingClipboardWriteRef.current) {
+        void writeToClipboard(pendingClipboardWriteRef.current)
+      }
+    }
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
   }, [])
 
   useEffect(() => {
