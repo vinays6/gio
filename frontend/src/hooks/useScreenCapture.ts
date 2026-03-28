@@ -1,6 +1,9 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { GoogleGenAI } from '@google/genai'
 import { ANALYSIS_SYSTEM_PROMPT } from '../constants'
+import CaptureWorker from '../workers/captureWorker?worker'
+
+const supportsOffscreenCanvas = typeof OffscreenCanvas !== 'undefined'
 
 export function useScreenCapture({
   getApiKey,
@@ -24,9 +27,26 @@ export function useScreenCapture({
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const captureStreamRef = useRef<MediaStream | null>(null)
   const captureIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const workerRef = useRef<Worker | null>(null)
 
   const isAnalyzing = useRef(false)
   const analyzeAndUpdateRef = useRef<((dataUrl: string) => Promise<void>) | null>(null)
+  const userPreferencesRef = useRef(userPreferences)
+  const currentMusicPromptRef = useRef(currentMusicPrompt)
+
+  useEffect(() => { userPreferencesRef.current = userPreferences }, [userPreferences])
+  useEffect(() => { currentMusicPromptRef.current = currentMusicPrompt }, [currentMusicPrompt])
+
+  // Initialize worker once (only on browsers that support OffscreenCanvas)
+  useEffect(() => {
+    if (!supportsOffscreenCanvas) return
+    const worker = new CaptureWorker()
+    workerRef.current = worker
+    return () => {
+      worker.terminate()
+      workerRef.current = null
+    }
+  }, [])
 
   const analyzeAndUpdate = useCallback(async (screenshotDataUrl: string) => {
     console.log('[Analysis] Starting cycle')
@@ -45,20 +65,20 @@ export function useScreenCapture({
 
       const base64Data = screenshotDataUrl.replace(/^data:image\/jpeg;base64,/, '')
       const client = new GoogleGenAI({ apiKey })
-      
-      const systemInstruction = userPreferences 
-        ? `${ANALYSIS_SYSTEM_PROMPT}\n\nUSER MUSIC PREFERENCES:\nThe user has the following music preferences: "${userPreferences}". You MUST factor these preferences into your decision when recommending a new music descriptor.` 
+
+      const systemInstruction = userPreferencesRef.current
+        ? `${ANALYSIS_SYSTEM_PROMPT}\n\nUSER MUSIC PREFERENCES:\nThe user has the following music preferences: "${userPreferencesRef.current}". You MUST factor these preferences into your decision when recommending a new music descriptor.`
         : ANALYSIS_SYSTEM_PROMPT
 
       const response = await client.models.generateContent({
-        model: 'gemini-3.1-pro-preview',
+        model: 'gemini-2.0-flash',
         config: { systemInstruction },
         contents: [
           {
             role: 'user',
             parts: [
               { inlineData: { mimeType: 'image/jpeg', data: base64Data } },
-              { text: `Current music: ${currentMusicPrompt}. What should the music be?` },
+              { text: `Current music: ${currentMusicPromptRef.current}. What should the music be?` },
             ],
           },
         ],
@@ -86,7 +106,7 @@ export function useScreenCapture({
     } finally {
       isAnalyzing.current = false
     }
-  }, [applyPrompt, currentMusicPrompt, getApiKey, userPreferences])
+  }, [applyPrompt, getApiKey])
 
   // Keep ref up to date to avoid stale closures in interval
   useEffect(() => {
@@ -108,6 +128,32 @@ export function useScreenCapture({
     setCaptureOn(false)
   }, [])
 
+  const captureFrame = useCallback((video: HTMLVideoElement, canvas: HTMLCanvasElement): Promise<string> => {
+    // Off-thread path: use Web Worker + OffscreenCanvas (doesn't block main thread)
+    if (supportsOffscreenCanvas && workerRef.current) {
+      return new Promise((resolve, reject) => {
+        createImageBitmap(video, { resizeWidth: 1280, resizeHeight: 720, resizeQuality: 'medium' })
+          .then((bitmap) => {
+            const worker = workerRef.current!
+            const handler = (e: MessageEvent<{ dataUrl?: string; error?: string }>) => {
+              worker.removeEventListener('message', handler)
+              if (e.data.error) reject(new Error(e.data.error))
+              else resolve(e.data.dataUrl!)
+            }
+            worker.addEventListener('message', handler)
+            worker.postMessage({ bitmap, width: 1280, height: 720 }, [bitmap])
+          })
+          .catch(reject)
+      })
+    }
+
+    // Fallback: synchronous main-thread encoding (Safari, older browsers)
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return Promise.reject(new Error('No canvas context'))
+    ctx.drawImage(video, 0, 0, 1280, 720)
+    return Promise.resolve(canvas.toDataURL('image/jpeg', 0.7))
+  }, [])
+
   const startCapture = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getDisplayMedia({ video: true })
@@ -122,19 +168,21 @@ export function useScreenCapture({
         track.onended = () => stopCapture()
       })
 
-      captureIntervalRef.current = setInterval(() => {
+      captureIntervalRef.current = setInterval(async () => {
         const video = videoRef.current
         const canvas = canvasRef.current
         if (!video || !canvas) return
-        const ctx = canvas.getContext('2d')
-        if (!ctx) return
-        ctx.drawImage(video, 0, 0, 1280, 720)
-        const dataUrl = canvas.toDataURL('image/jpeg', 0.7)
-        setLatestScreenshot(dataUrl)
-        const timeStr = new Date().toLocaleTimeString()
-        setCaptureStatus(`Capturing every 6s — last captured at ${timeStr}`)
-        console.log('[Screenshot] Captured at ' + timeStr + ', length: ' + dataUrl.length)
-        void analyzeAndUpdateRef.current?.(dataUrl)
+
+        try {
+          const dataUrl = await captureFrame(video, canvas)
+          setLatestScreenshot(dataUrl)
+          const timeStr = new Date().toLocaleTimeString()
+          setCaptureStatus(`Capturing every 6s — last captured at ${timeStr}`)
+          console.log('[Screenshot] Captured at ' + timeStr + ', length: ' + dataUrl.length)
+          void analyzeAndUpdateRef.current?.(dataUrl)
+        } catch (err) {
+          console.error('[Screenshot] Capture failed:', err)
+        }
       }, 6000)
 
       setCaptureOn(true)
@@ -143,7 +191,7 @@ export function useScreenCapture({
       setCaptureOn(false)
       setCaptureStatus('Screen share was denied or cancelled')
     }
-  }, [stopCapture])
+  }, [stopCapture, captureFrame])
 
   const toggleCapture = useCallback(async () => {
     if (captureOn) stopCapture()
