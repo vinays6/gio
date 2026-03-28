@@ -55,6 +55,9 @@ When the user asks you to write, draft, compose, or create any piece of text (em
 
 You are aware of what is on the user's screen. Reference it naturally if relevant.`
 
+// Escape HTML special characters for safe PiP innerHTML interpolation
+const esc = (s: string) => s.replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+
 // ─── types ────────────────────────────────────────────────────────────────────
 
 type StreamStatus =
@@ -154,7 +157,7 @@ function App() {
   const gioNextPlaybackTimeRef = useRef(0)
   const isGioActiveRef = useRef(false)
   const gioTranscriptRef = useRef('')
-  const clipboardProcessedRef = useRef(false)
+  const pendingClipboardWriteRef = useRef<string | null>(null)
   const startGioSessionRef = useRef<(() => Promise<void>) | null>(null)
   const endGioSessionRef = useRef<(() => Promise<void>) | null>(null)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -411,11 +414,6 @@ function App() {
     gioNextPlaybackTimeRef.current = startAt + audioBuffer.duration
   }
 
-  // ─── Gio clipboard processing ─────────────────────────────────────────────
-
-  // Kept for potential future use; clipboard is now handled via saveToClipboard function call
-  const processGioTranscript = (rawTranscript: string): string => rawTranscript
-
   // ─── Gio session lifecycle ────────────────────────────────────────────────
 
   const startGioSession = async () => {
@@ -426,6 +424,7 @@ function App() {
 
     // Reset per-session state
     gioTranscriptRef.current = ''
+    pendingClipboardWriteRef.current = null
     setGioTranscript('')
     setGioError(null)
     setClipboardContent(null)
@@ -492,7 +491,7 @@ function App() {
                 const content: string = call.args?.content ?? ''
                 if (content) {
                   setClipboardContent(content)
-                  // Actual clipboard write is handled in the useEffect watching clipboardContent
+                  pendingClipboardWriteRef.current = content
                   console.log('[Gio] saveToClipboard called, length:', content.length)
                 }
                 // Acknowledge the tool call so the model can continue
@@ -602,6 +601,25 @@ function App() {
 
   const endGioSession = async () => {
     if (!isGioActiveRef.current && !gioSessionRef.current && !gioMicStreamRef.current) return
+
+    // ── Guaranteed clipboard write (must be before any await — user gesture still active) ──
+    if (pendingClipboardWriteRef.current) {
+      const toWrite = pendingClipboardWriteRef.current
+      pendingClipboardWriteRef.current = null
+      try {
+        await navigator.clipboard.writeText(toWrite)
+        console.log('[Gio] Clipboard written on session end (user gesture), length:', toWrite.length)
+      } catch {
+        try {
+          const ta = document.createElement('textarea')
+          ta.value = toWrite
+          ta.style.cssText = 'position:fixed;opacity:0;pointer-events:none'
+          document.body.appendChild(ta); ta.focus(); ta.select()
+          document.execCommand('copy')
+          document.body.removeChild(ta)
+        } catch { /* ignore */ }
+      }
+    }
 
     isGioActiveRef.current = false
     setIsGioActive(false)
@@ -1022,7 +1040,6 @@ function App() {
       button:disabled { opacity: 0.5; cursor: not-allowed; }
     `
 
-    const esc = (s: string) => s.replaceAll('<', '&lt;').replaceAll('>', '&gt;')
     const isPlayable = status === 'paused' || status === 'stopped' || status === 'idle'
     const playPauseLabel = status === 'streaming' ? 'Pause' : 'Play'
     const vocalsLabel = vocalsEnabled ? 'Vocals on' : 'Vocals off'
@@ -1227,6 +1244,21 @@ function App() {
       pipWindowRef.current = pipWindow
       setPipMessage('')
       pipWindow.addEventListener('pagehide', () => { pipWindowRef.current = null })
+
+      // Any click inside the PiP window is a user gesture while the PiP is focused.
+      // We piggyback on it to flush any pending clipboard write that failed earlier
+      // due to Chrome's transient-activation restriction.
+      pipWindow.document.addEventListener('click', () => {
+        const content = pendingClipboardWriteRef.current
+        if (!content) return
+        pipWindow.navigator.clipboard.writeText(content)
+          .then(() => {
+            pendingClipboardWriteRef.current = null
+            console.log('[Gio] Clipboard flushed on PiP click, length:', content.length)
+          })
+          .catch(() => { /* PiP clipboard write failed — Copy button still works */ })
+      }, { capture: true })
+
       updatePiPContents()
     } catch (pipError) {
       const message =
@@ -1279,42 +1311,17 @@ function App() {
     isGioActive, gioTranscript, clipboardContent, gioError,
   ])
 
-  // Auto-copy clipboard content whenever Gio sets it via saveToClipboard function call.
-  // We try the PiP window first (it's likely focused), then the main window.
-  // Both attempts are made outside the WebSocket callback where user-gesture rules apply.
+  // Immediate best-effort auto-copy when saveToClipboard fires.
+  // Works if the "Talk to Gio" click is still within Chrome's ~5s transient activation window.
+  // If it fails (session has been running longer), the PiP click-listener in openDocumentPiP
+  // will flush pendingClipboardWriteRef on the user's next interaction with the PiP window.
   useEffect(() => {
     if (!clipboardContent) return
-    const tryWrite = async (win: Window) => {
-      try {
-        if (win.navigator?.clipboard) {
-          await win.navigator.clipboard.writeText(clipboardContent)
-          console.log('[Gio] Auto-copy succeeded via', win === window ? 'main' : 'PiP', 'window')
-          return true
-        }
-      } catch { /* fall through */ }
-      // execCommand fallback (works when the window is focused)
-      try {
-        const ta = win.document.createElement('textarea')
-        ta.value = clipboardContent
-        ta.style.cssText = 'position:fixed;opacity:0;pointer-events:none'
-        win.document.body.appendChild(ta)
-        ta.focus(); ta.select()
-        const ok = win.document.execCommand('copy')
-        win.document.body.removeChild(ta)
-        if (ok) {
-          console.log('[Gio] Auto-copy succeeded via execCommand in', win === window ? 'main' : 'PiP')
-          return true
-        }
-      } catch { /* ignore */ }
-      return false
-    }
-    void (async () => {
-      const pipWin = pipWindowRef.current
-      if (pipWin && !pipWin.closed) {
-        if (await tryWrite(pipWin)) return
-      }
-      await tryWrite(window)
-    })()
+    const pipWin = pipWindowRef.current
+    const target = pipWin && !pipWin.closed ? pipWin : window
+    target.navigator?.clipboard?.writeText(clipboardContent)
+      .then(() => console.log('[Gio] Immediate auto-copy succeeded'))
+      .catch(() => { /* will be retried on next PiP click or Stop Gio */ })
   }, [clipboardContent])
 
   // Auto-open PiP when tab hides during streaming
