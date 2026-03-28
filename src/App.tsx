@@ -220,13 +220,22 @@ function App() {
         backdrop-filter: blur(18px);
       }
 
+      .pip-title-bar {
+        display: flex;
+        align-center: center;
+        justify-content: center;
+      }
+
       .pip-title {
+        display: flex;
+        align-items: center;
         margin: 0;
         font-size: 1.5rem;
         line-height: 1;
       }
 
       .pip-status {
+        margin-left: 1rem;
         display: inline-flex;
         align-items: center;
         justify-content: center;
@@ -336,8 +345,10 @@ function App() {
     const shell = pipWindow.document.createElement('main')
     shell.className = 'pip-shell'
     shell.innerHTML = `
-      <h1 class="pip-title">Lyria controls</h1>
-      <span class="pip-status ${status}">${status}</span>
+      <div class="pip-title-bar">
+        <h1 class="pip-title">Gio controls</h1>
+        <span class="pip-status ${status}">${status}</span>
+      </div>
       ${
         showScreenshotInPip && latestScreenshot
           ? `<div class="pip-screenshot-panel">
@@ -772,7 +783,7 @@ function App() {
     <main className="app-shell">
       <section className="hero-panel">
         <p className="eyebrow">Realtime music streaming</p>
-        <h1>Lyria control room</h1>
+        <h1>Gio control room</h1>
         <p className="hero-copy">
           Play or pause the stream, toggle vocals, and tune the groove live while the
           track keeps moving.
