@@ -17,6 +17,23 @@ const DEFAULT_BRIGHTNESS = 0.55
 const DEFAULT_PROMPT =
   'Minimal techno with deep bass, sparse percussion, and atmospheric synths'
 
+const ANALYSIS_SYSTEM_PROMPT = `You are a music director for a focus and productivity app. Your job is to decide whether the background music should change based on what the user is currently doing on their screen.
+
+You will be given:
+1. A screenshot of the user's screen
+2. The current music descriptor string (what is currently playing)
+
+Your response must follow these rules EXACTLY with no exceptions:
+
+- Look at the screenshot and determine what the user is doing (e.g. studying, coding, gaming, watching a video, in a meeting, browsing social media, etc.)
+- Compare the detected activity to the current music descriptor
+- If the current music fits the activity well enough (no dramatic mismatch), respond with exactly one word: FALSE
+- If there is a dramatic mismatch between the activity and the music (e.g. heavy metal while studying, party music while in a meeting, silence while exercising), respond with ONLY a new music descriptor string — a short phrase like "lo-fi hip hop" or "ambient focus" or "upbeat electronic" — nothing else
+- Do NOT explain your reasoning
+- Do NOT use punctuation outside the descriptor itself
+- Do NOT say anything other than FALSE or the new descriptor string
+- Your entire response must be either the word FALSE or a short music descriptor phrase`
+
 type StreamStatus =
   | 'idle'
   | 'connecting'
@@ -59,7 +76,9 @@ function App() {
   const [captureOn, setCaptureOn] = useState(false)
   const [latestScreenshot, setLatestScreenshot] = useState<string | null>(null)
   const [captureStatus, setCaptureStatus] = useState('Not capturing')
-  const [showScreenshotInPip, setShowScreenshotInPip] = useState(false)
+
+  // Gemini-controlled music prompt
+  const [currentMusicPrompt, setCurrentMusicPrompt] = useState('ambient')
 
   const sessionRef = useRef<LiveMusicSession | null>(null)
   const lastAppliedConfigRef = useRef<LiveMusicGenerationConfig | null>(null)
@@ -73,6 +92,10 @@ function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const captureStreamRef = useRef<MediaStream | null>(null)
   const captureIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Analysis refs
+  const isAnalyzing = useRef(false)
+  const analyzeAndUpdateRef = useRef<((dataUrl: string) => Promise<void>) | null>(null)
 
   const isDocumentPiPSupported =
     typeof window !== 'undefined' && 'documentPictureInPicture' in window
@@ -108,6 +131,61 @@ function App() {
     return config
   }
 
+  const getApiKey = () => import.meta.env.VITE_GEMINI_API_KEY?.trim() ?? ''
+
+  const applyPrompt = async (nextPrompt: string) => {
+    if (!sessionRef.current) {
+      return
+    }
+
+    await sessionRef.current.setWeightedPrompts({
+      weightedPrompts: [{ text: getEffectivePrompt(nextPrompt), weight: 1 }],
+    })
+  }
+
+  // Defined every render so it always closes over fresh state; ref kept updated below.
+  const analyzeAndUpdate = async (screenshotDataUrl: string) => {
+    if (isAnalyzing.current) return
+    isAnalyzing.current = true
+    try {
+      const apiKey = getApiKey()
+      if (!apiKey) return
+
+      const base64Data = screenshotDataUrl.replace(/^data:image\/jpeg;base64,/, '')
+      const client = new GoogleGenAI({ apiKey })
+      const response = await client.models.generateContent({
+        model: 'gemini-2.5-flash',
+        config: { systemInstruction: ANALYSIS_SYSTEM_PROMPT },
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { inlineData: { mimeType: 'image/jpeg', data: base64Data } },
+              { text: `Current music: ${currentMusicPrompt}. What should the music be?` },
+            ],
+          },
+        ],
+      })
+
+      const text = (response.text ?? '').trim()
+
+      if (!text || text.toUpperCase() === 'FALSE') {
+        console.log('[Music Analysis] Response: FALSE')
+      } else {
+        console.log(`[Music Analysis] Response: "${text}" → updating music`)
+        setCurrentMusicPrompt(text)
+        await applyPrompt(text)
+      }
+    } catch (err) {
+      console.error('[Music Analysis] Error:', err)
+    } finally {
+      isAnalyzing.current = false
+    }
+  }
+
+  // Keep the ref pointing to the latest version of analyzeAndUpdate each render.
+  analyzeAndUpdateRef.current = analyzeAndUpdate
+
   const stopCapture = () => {
     if (captureIntervalRef.current) {
       clearInterval(captureIntervalRef.current)
@@ -123,7 +201,6 @@ function App() {
     setLatestScreenshot(null)
     setCaptureStatus('Not capturing')
     setCaptureOn(false)
-    setShowScreenshotInPip(false)
   }
 
   const startCapture = async () => {
@@ -154,6 +231,7 @@ function App() {
         const timeStr = new Date().toLocaleTimeString()
         setCaptureStatus(`Capturing every 10s — last captured at ${timeStr}`)
         console.log('[Screenshot] Captured at ' + timeStr + ', base64 length: ' + dataUrl.length)
+        void analyzeAndUpdateRef.current?.(dataUrl)
       }, 10000)
 
       setCaptureOn(true)
@@ -284,6 +362,29 @@ function App() {
         color: #fca5a5;
       }
 
+      .pip-now-playing {
+        padding: 10px 14px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.05);
+      }
+
+      .pip-now-playing-label {
+        margin: 0 0 4px;
+        font-size: 0.65rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #f7b267;
+      }
+
+      .pip-now-playing-value {
+        margin: 0;
+        font-size: 0.85rem;
+        color: rgba(226, 232, 240, 0.92);
+        line-height: 1.4;
+      }
+
       .pip-actions {
         display: grid;
         gap: 12px;
@@ -314,47 +415,6 @@ function App() {
         opacity: 0.5;
         cursor: not-allowed;
       }
-
-      .pip-last-activity {
-        width: 100%;
-        background: rgba(255, 255, 255, 0.08);
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        color: #e2e8f0;
-      }
-
-      .pip-last-activity:disabled {
-        opacity: 0.4;
-        cursor: not-allowed;
-      }
-
-      .pip-screenshot-panel {
-        display: grid;
-        gap: 8px;
-      }
-
-      .pip-screenshot-header {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-      }
-
-      .pip-screenshot-dismiss {
-        background: rgba(255, 255, 255, 0.1);
-        border: 1px solid rgba(255, 255, 255, 0.12);
-        color: #e2e8f0;
-        border-radius: 8px;
-        padding: 4px 10px;
-        font-size: 0.75rem;
-        cursor: pointer;
-      }
-
-      .pip-screenshot-img {
-        width: 100%;
-        border-radius: 12px;
-        object-fit: contain;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        display: block;
-      }
     `
 
     const isPlayable = status === 'paused' || status === 'stopped' || status === 'idle'
@@ -368,18 +428,10 @@ function App() {
         <h1 class="pip-title">Gio controls</h1>
         <span class="pip-status ${status}">${status}</span>
       </div>
-      ${
-        showScreenshotInPip && latestScreenshot
-          ? `<div class="pip-screenshot-panel">
-               <div class="pip-screenshot-header">
-                 <p class="pip-meta">Last captured activity</p>
-                 <button class="pip-screenshot-dismiss" type="button">✕ Close</button>
-               </div>
-               <img class="pip-screenshot-img" src="${latestScreenshot}" alt="Last captured activity" />
-             </div>`
-          : ''
-      }
-      <button class="pip-last-activity" type="button"${latestScreenshot ? '' : ' disabled'}>Last activity</button>
+      <div class="pip-now-playing">
+        <p class="pip-now-playing-label">Now playing</p>
+        <p class="pip-now-playing-value">${currentMusicPrompt.replaceAll('<', '&lt;').replaceAll('>', '&gt;')}</p>
+      </div>
       <div class="pip-actions">
         <button class="pip-primary" type="button" ${status === 'connecting' ? 'disabled' : ''}>
           ${playPauseLabel}
@@ -409,16 +461,6 @@ function App() {
 
     shell.querySelector<HTMLButtonElement>('.pip-secondary')?.addEventListener('click', () => {
       void toggleVocals()
-    })
-
-    shell.querySelector<HTMLButtonElement>('.pip-last-activity')?.addEventListener('click', () => {
-      if (latestScreenshot) {
-        setShowScreenshotInPip(true)
-      }
-    })
-
-    shell.querySelector<HTMLButtonElement>('.pip-screenshot-dismiss')?.addEventListener('click', () => {
-      setShowScreenshotInPip(false)
     })
   }
 
@@ -468,7 +510,7 @@ function App() {
 
   useEffect(() => {
     updatePiPContents()
-  }, [brightness, bpm, density, error, onlyBassAndDrums, status, vocalsEnabled, latestScreenshot, showScreenshotInPip])
+  }, [brightness, bpm, density, error, onlyBassAndDrums, status, vocalsEnabled, currentMusicPrompt])
 
   useEffect(() => {
     if (!isDocumentPiPSupported) {
@@ -499,8 +541,6 @@ function App() {
       window.removeEventListener('pagehide', handlePageHide)
     }
   }, [isDocumentPiPSupported, status])
-
-  const getApiKey = () => import.meta.env.VITE_GEMINI_API_KEY?.trim() ?? ''
 
   const ensureAudioContext = async () => {
     if (!audioContextRef.current) {
@@ -581,16 +621,6 @@ function App() {
     const startAt = Math.max(audioContext.currentTime + 0.05, nextPlaybackTimeRef.current)
     source.start(startAt)
     nextPlaybackTimeRef.current = startAt + audioBuffer.duration
-  }
-
-  const applyPrompt = async (nextPrompt: string) => {
-    if (!sessionRef.current) {
-      return
-    }
-
-    await sessionRef.current.setWeightedPrompts({
-      weightedPrompts: [{ text: getEffectivePrompt(nextPrompt), weight: 1 }],
-    })
   }
 
   const applyConfig = async (nextConfig = getConfigSummary()) => {
