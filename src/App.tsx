@@ -1152,12 +1152,37 @@ function App() {
     }
 
     shell.querySelector<HTMLButtonElement>('.pip-gio-clipboard-copy')?.addEventListener('click', () => {
+      // Always get fresh clipboard content and use a robust fallback
       if (clipboardContent) {
-        navigator.clipboard.writeText(clipboardContent).catch(err =>
-          console.warn('[Gio] Re-copy failed:', err),
-        )
+        // Try the window's clipboard, fallback to textarea if not available
+        if (pipWindow.navigator && pipWindow.navigator.clipboard && typeof pipWindow.navigator.clipboard.writeText === 'function') {
+          pipWindow.navigator.clipboard.writeText(clipboardContent).catch(err => {
+            console.warn('[Gio] Re-copy failed, will fallback:', err)
+            fallbackCopyPiP(clipboardContent)
+          })
+        } else {
+          fallbackCopyPiP(clipboardContent)
+        }
       }
     })
+
+    // Helper function: fallback copy inside PiP document
+    function fallbackCopyPiP(text) {
+      try {
+        const ta = pipWindow.document.createElement('textarea')
+        ta.value = text
+        ta.style.position = 'fixed'
+        ta.style.opacity = '0'
+        pipWindow.document.body.appendChild(ta)
+        ta.focus()
+        ta.select()
+        pipWindow.document.execCommand('copy')
+        pipWindow.document.body.removeChild(ta)
+        console.log('[Gio] Fallback re-copy in PiP, length:', text.length)
+      } catch (err) {
+        console.warn('[Gio] Fallback failed in PiP:', err)
+      }
+    }
 
     shell.querySelector<HTMLButtonElement>('.pip-gio-clipboard-dismiss')?.addEventListener('click', () => {
       setClipboardContent(null)
