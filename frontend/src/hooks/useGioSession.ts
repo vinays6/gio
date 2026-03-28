@@ -265,13 +265,13 @@ export function useGioSession({
           if (!gioSessionRef.current || !isGioActiveRef.current) return
           const base64Data = latestScreenshotRef.current!.replace(/^data:image\/jpeg;base64,/, '')
           try {
+            gioSessionRef.current.sendRealtimeInput({
+              media: { mimeType: 'image/jpeg', data: base64Data },
+            } as any)
             gioSessionRef.current.sendClientContent({
               turns: [{
                 role: 'user',
-                parts: [
-                  { inlineData: { mimeType: 'image/jpeg', data: base64Data } },
-                  { text: "This is what the user's screen currently looks like. Use this as context for their question." },
-                ],
+                parts: [{ text: "This is what the user's screen currently looks like. Use this as context for their question." }],
               }],
               turnComplete: false,
             })
