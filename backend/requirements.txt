@@ -1,7 +1,13 @@
 flask
+flask-sock
 flask-cors
 flask-sqlalchemy
 oauthlib
 authlib
 requests
-dotenv
+httpx
+mcp
+google-genai
+google-api-python-client
+google-auth
+python-dotenv

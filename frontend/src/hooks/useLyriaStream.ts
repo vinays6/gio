@@ -1,23 +1,26 @@
 import { useRef, useState, useCallback, useEffect } from 'react'
 import {
-  GoogleGenAI,
-  MusicGenerationMode,
-  type LiveMusicGenerationConfig,
-  type LiveMusicServerMessage,
-  type LiveMusicSession,
-} from '@google/genai'
-import {
-  MODEL,
-  SAMPLE_RATE,
   CHANNELS,
   DEFAULT_BPM,
-  DEFAULT_DENSITY,
   DEFAULT_BRIGHTNESS,
+  DEFAULT_DENSITY,
   DEFAULT_PROMPT,
+  SAMPLE_RATE,
   type StreamStatus
 } from '../constants'
+import { getWebSocketUrl } from '../lib/realtime'
 
-export function useLyriaStream(getApiKey: () => string) {
+type MusicGenerationMode = 'QUALITY' | 'VOCALIZATION'
+
+type MusicGenerationConfig = {
+  bpm?: number
+  density?: number
+  brightness?: number
+  onlyBassAndDrums: boolean
+  musicGenerationMode: MusicGenerationMode
+}
+
+export function useLyriaStream() {
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT)
   const [bpm, setBpm] = useState(DEFAULT_BPM)
   const [density, setDensity] = useState(DEFAULT_DENSITY)
@@ -30,21 +33,20 @@ export function useLyriaStream(getApiKey: () => string) {
   const [status, setStatus] = useState<StreamStatus>('idle')
   const [error, setError] = useState('')
 
-  const sessionRef = useRef<LiveMusicSession | null>(null)
-  const lastAppliedConfigRef = useRef<LiveMusicGenerationConfig | null>(null)
+  const socketRef = useRef<WebSocket | null>(null)
+  const lastAppliedConfigRef = useRef<MusicGenerationConfig | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const nextPlaybackTimeRef = useRef(0)
   const masterGainRef = useRef<GainNode | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
   const lyriaVolumeRef = useRef(1.0)
   const isUnmountingRef = useRef(false)
+  const connectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const getConfigSummary = useCallback((): LiveMusicGenerationConfig => {
-    const config: LiveMusicGenerationConfig = {
+  const getConfigSummary = useCallback((): MusicGenerationConfig => {
+    const config: MusicGenerationConfig = {
       onlyBassAndDrums,
-      musicGenerationMode: vocalsEnabled
-        ? MusicGenerationMode.VOCALIZATION
-        : MusicGenerationMode.QUALITY,
+      musicGenerationMode: vocalsEnabled ? 'VOCALIZATION' : 'QUALITY',
     }
     if (bpmOverridden) config.bpm = bpm
     if (densityOverridden) config.density = density
@@ -55,22 +57,38 @@ export function useLyriaStream(getApiKey: () => string) {
   const getEffectivePrompt = useCallback((basePrompt: string) =>
     vocalsEnabled ? `${basePrompt}, Vocals` : basePrompt, [vocalsEnabled])
 
+  const ensureSocketOpen = useCallback(() => {
+    const socket = socketRef.current
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      throw new Error('The music stream is not connected.')
+    }
+    return socket
+  }, [])
+
+  const sendSocketMessage = useCallback((payload: Record<string, unknown>) => {
+    const socket = ensureSocketOpen()
+    socket.send(JSON.stringify(payload))
+  }, [ensureSocketOpen])
+
   const applyPrompt = useCallback(async (nextPrompt: string) => {
-    if (!sessionRef.current) return
-    console.log('[Analysis] Lyria prompt update:', nextPrompt)
-    await sessionRef.current.setWeightedPrompts({
+    if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return
+    sendSocketMessage({
+      type: 'set_weighted_prompts',
       weightedPrompts: [{ text: getEffectivePrompt(nextPrompt), weight: 1 }],
     })
-  }, [getEffectivePrompt])
+  }, [getEffectivePrompt, sendSocketMessage])
 
   const applyConfig = useCallback(async (nextConfig = getConfigSummary()) => {
-    if (!sessionRef.current) return
-    await sessionRef.current.setMusicGenerationConfig({ musicGenerationConfig: nextConfig })
+    if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return
+    sendSocketMessage({
+      type: 'set_music_generation_config',
+      musicGenerationConfig: nextConfig,
+    })
     const previousConfig = lastAppliedConfigRef.current
     const shouldResetContext = previousConfig !== null && previousConfig.bpm !== nextConfig.bpm
     lastAppliedConfigRef.current = nextConfig
-    if (shouldResetContext) await sessionRef.current.resetContext()
-  }, [getConfigSummary])
+    if (shouldResetContext) sendSocketMessage({ type: 'reset_context' })
+  }, [getConfigSummary, sendSocketMessage])
 
   const ensureMasterGain = useCallback((ctx: AudioContext): GainNode => {
     if (masterGainRef.current && masterGainRef.current.context === ctx) {
@@ -79,7 +97,7 @@ export function useLyriaStream(getApiKey: () => string) {
     const gain = ctx.createGain()
     gain.gain.value = lyriaVolumeRef.current
     const analyser = ctx.createAnalyser()
-    analyser.fftSize = 64  // gives 32 bins
+    analyser.fftSize = 64
     analyserRef.current = analyser
     gain.connect(analyser)
     analyser.connect(ctx.destination)
@@ -129,6 +147,7 @@ export function useLyriaStream(getApiKey: () => string) {
     if (audioContextRef.current && audioContextRef.current !== audioContext && audioContextRef.current.state !== 'closed') {
       await audioContextRef.current.close()
       masterGainRef.current = null
+      analyserRef.current = null
       resetPlaybackQueue()
     }
 
@@ -168,11 +187,18 @@ export function useLyriaStream(getApiKey: () => string) {
   }, [ensureAudioContext, ensureMasterGain, resetPlaybackQueue])
 
   const stopStream = useCallback(async (nextStatus: Exclude<StreamStatus, 'connecting'> | null = 'idle') => {
-    const currentSession = sessionRef.current
-    sessionRef.current = null
+    const currentSocket = socketRef.current
+    socketRef.current = null
     lastAppliedConfigRef.current = null
+    if (connectTimeoutRef.current) {
+      clearTimeout(connectTimeoutRef.current)
+      connectTimeoutRef.current = null
+    }
 
-    if (currentSession?.close) await currentSession.close()
+    if (currentSocket && currentSocket.readyState === WebSocket.OPEN) {
+      currentSocket.send(JSON.stringify({ type: 'close' }))
+    }
+    currentSocket?.close()
 
     nextPlaybackTimeRef.current = 0
 
@@ -187,13 +213,6 @@ export function useLyriaStream(getApiKey: () => string) {
   }, [])
 
   const startStream = useCallback(async () => {
-    const apiKey = getApiKey()
-    if (!apiKey) {
-      setError('Add VITE_GEMINI_API_KEY to your environment before starting the stream.')
-      setStatus('error')
-      return
-    }
-
     setError('')
     setStatus('connecting')
     resetPlaybackQueue()
@@ -203,60 +222,123 @@ export function useLyriaStream(getApiKey: () => string) {
       await ensureAudioContext()
       resetPlaybackQueue()
 
-      const client = new GoogleGenAI({ apiKey, apiVersion: 'v1alpha' })
-      const session = await client.live.music.connect({
-        model: MODEL,
-        callbacks: {
-          onmessage: (message: LiveMusicServerMessage) => {
-            const audioChunks = message.serverContent?.audioChunks ?? []
-            for (const chunk of audioChunks) {
-              if (chunk.data) void schedulePcm16Chunk(chunk.data, chunk.mimeType)
-            }
-          },
-          onerror: (sessionError: unknown) => {
-            const nextError = sessionError instanceof Error ? sessionError.message : 'The music stream failed unexpectedly.'
-            setError(nextError)
-            setStatus('error')
-          },
-          onclose: () => {
-            if (!isUnmountingRef.current) {
-              setStatus(currentStatus => currentStatus === 'error' ? currentStatus : 'stopped')
-            }
-          },
-        },
-      })
+      const socketUrl = getWebSocketUrl('/api/lyria')
+      console.info('[Lyria] Connecting to', socketUrl)
+      const socket = new WebSocket(socketUrl)
+      socketRef.current = socket
+      connectTimeoutRef.current = setTimeout(() => {
+        if (socketRef.current === socket && socket.readyState === WebSocket.CONNECTING) {
+          console.error('[Lyria] Connection timed out before websocket open')
+          setError('Timed out connecting to backend music stream.')
+          setStatus('error')
+          socket.close()
+        }
+      }, 8000)
 
-      sessionRef.current = session
-      await applyPrompt(prompt)
-      await applyConfig()
-      session.play()
-      setStatus('streaming')
+      socket.onopen = () => {
+        console.info('[Lyria] WebSocket open')
+      }
+
+      socket.onmessage = (event) => {
+        console.debug('[Lyria] Raw message', event.data)
+        const message = JSON.parse(String(event.data)) as {
+          type?: string
+          data?: string
+          mimeType?: string
+          message?: string
+        }
+        console.debug('[Lyria] Message', message.type)
+
+        if (message.type === 'socket_opened') {
+          return
+        }
+
+        if (message.type === 'ready') {
+          if (connectTimeoutRef.current) {
+            clearTimeout(connectTimeoutRef.current)
+            connectTimeoutRef.current = null
+          }
+          void (async () => {
+            try {
+              if (socketRef.current !== socket) return
+              socket.send(JSON.stringify({
+                type: 'set_weighted_prompts',
+                weightedPrompts: [{ text: getEffectivePrompt(prompt), weight: 1 }],
+              }))
+              const nextConfig = getConfigSummary()
+              socket.send(JSON.stringify({
+                type: 'set_music_generation_config',
+                musicGenerationConfig: nextConfig,
+              }))
+              lastAppliedConfigRef.current = nextConfig
+              socket.send(JSON.stringify({ type: 'play' }))
+              setStatus('streaming')
+            } catch (streamError) {
+              const nextError = streamError instanceof Error ? streamError.message : 'Unable to initialize the music stream.'
+              setError(nextError)
+              setStatus('error')
+            }
+          })()
+          return
+        }
+
+        if (message.type === 'audio' && message.data) {
+          void schedulePcm16Chunk(message.data, message.mimeType)
+          return
+        }
+
+        if (message.type === 'error') {
+          setError(message.message ?? 'The music stream failed unexpectedly.')
+          setStatus('error')
+        }
+      }
+
+      socket.onerror = (event) => {
+        console.error('[Lyria] WebSocket error', event)
+        setError('Unable to reach the backend music stream.')
+        setStatus('error')
+      }
+
+      socket.onclose = (event) => {
+        console.warn('[Lyria] WebSocket closed', event.code, event.reason)
+        if (connectTimeoutRef.current) {
+          clearTimeout(connectTimeoutRef.current)
+          connectTimeoutRef.current = null
+        }
+        if (!isUnmountingRef.current && socketRef.current === socket) {
+          socketRef.current = null
+          setStatus(currentStatus => currentStatus === 'error' ? currentStatus : 'stopped')
+        }
+      }
     } catch (streamError) {
-      const nextError = streamError instanceof Error ? streamError.message : 'Unable to connect to the Lyria realtime model.'
+      const nextError = streamError instanceof Error ? streamError.message : 'Unable to connect to the backend music stream.'
       setError(nextError)
       setStatus('error')
       await stopStream(null)
     }
-  }, [applyConfig, applyPrompt, ensureAudioContext, getApiKey, prompt, resetPlaybackQueue, schedulePcm16Chunk, stopStream])
+  }, [ensureAudioContext, getConfigSummary, getEffectivePrompt, prompt, resetPlaybackQueue, schedulePcm16Chunk, stopStream])
 
   const playStream = useCallback(async () => {
     try {
       setError('')
-      if (!sessionRef.current) { await startStream(); return }
+      if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) {
+        await startStream()
+        return
+      }
       await ensureAudioContext()
-      sessionRef.current.play()
+      sendSocketMessage({ type: 'play' })
       setStatus('streaming')
     } catch (playError) {
       const nextError = playError instanceof Error ? playError.message : 'Unable to resume playback.'
       setError(nextError)
       setStatus('error')
     }
-  }, [ensureAudioContext, startStream])
+  }, [ensureAudioContext, sendSocketMessage, startStream])
 
   const pauseStream = useCallback(async () => {
-    if (!sessionRef.current) return
+    if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return
     try {
-      sessionRef.current.pause()
+      sendSocketMessage({ type: 'pause' })
       if (audioContextRef.current?.state === 'running') {
         await audioContextRef.current.suspend()
       }
@@ -266,24 +348,27 @@ export function useLyriaStream(getApiKey: () => string) {
       setError(nextError)
       setStatus('error')
     }
-  }, [])
+  }, [sendSocketMessage])
 
   const toggleVocals = useCallback(async () => {
     const nextVocalsEnabled = !vocalsEnabled
     setVocalsEnabled(nextVocalsEnabled)
-    if (!sessionRef.current) return
+    if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return
 
     try {
-      await sessionRef.current.setWeightedPrompts({
-        weightedPrompts: [{ text: nextVocalsEnabled ? `${prompt}, Vocals` : prompt, weight: 1 }],
+      const effectivePrompt = nextVocalsEnabled ? `${prompt}, Vocals` : prompt
+      sendSocketMessage({
+        type: 'set_weighted_prompts',
+        weightedPrompts: [{ text: effectivePrompt, weight: 1 }],
       })
-      const nextConfig: LiveMusicGenerationConfig = {
+      const nextConfig: MusicGenerationConfig = {
         ...getConfigSummary(),
-        musicGenerationMode: nextVocalsEnabled
-          ? MusicGenerationMode.VOCALIZATION
-          : MusicGenerationMode.QUALITY,
+        musicGenerationMode: nextVocalsEnabled ? 'VOCALIZATION' : 'QUALITY',
       }
-      await sessionRef.current.setMusicGenerationConfig({ musicGenerationConfig: nextConfig })
+      sendSocketMessage({
+        type: 'set_music_generation_config',
+        musicGenerationConfig: nextConfig,
+      })
       lastAppliedConfigRef.current = nextConfig
     } catch (vocalsError) {
       setVocalsEnabled(!nextVocalsEnabled)
@@ -291,10 +376,10 @@ export function useLyriaStream(getApiKey: () => string) {
       setError(nextError)
       setStatus('error')
     }
-  }, [getConfigSummary, prompt, vocalsEnabled])
+  }, [getConfigSummary, prompt, sendSocketMessage, vocalsEnabled])
 
   const syncPrompt = useCallback(async () => {
-    if (!sessionRef.current) return
+    if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return
     try {
       setError('')
       await applyPrompt(prompt)
@@ -306,7 +391,7 @@ export function useLyriaStream(getApiKey: () => string) {
   }, [applyPrompt, prompt])
 
   const syncConfig = useCallback(async () => {
-    if (!sessionRef.current) return
+    if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return
     try {
       setError('')
       await applyConfig()

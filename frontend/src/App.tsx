@@ -7,17 +7,14 @@ import { LandingPage } from './components/LandingPage'
 import './index.css'
 
 function App() {
-  const getApiKey = () => import.meta.env.VITE_GEMINI_API_KEY?.trim() ?? ''
-
   const { user, loading: userLoading, setPreferences } = useUser()
 
-  const lyria = useLyriaStream(getApiKey)
+  const lyria = useLyriaStream()
   const capture = useScreenCapture({
-    getApiKey,
     applyPrompt: lyria.applyPrompt,
     userPreferences: user?.preferences,
   })
-  const gio = useGioSession({ getApiKey, fadeVolume: lyria.fadeVolume, latestScreenshot: capture.latestScreenshot })
+  const gio = useGioSession({ fadeVolume: lyria.fadeVolume, latestScreenshot: capture.latestScreenshot })
 
   const pip = useDocumentPiP(
     {
@@ -96,8 +93,8 @@ function App() {
         setPreferences={setPreferences}
       />
       {/* Hidden elements for screen capture */}
-      <video ref={capture.videoRef} style={{ display: 'none' }} muted playsInline />
-      <canvas ref={capture.canvasRef} width={1280} height={720} style={{ display: 'none' }} />
+      <video ref={capture.setVideoElement} style={{ display: 'none' }} muted playsInline />
+      <canvas ref={capture.setCanvasElement} width={1280} height={720} style={{ display: 'none' }} />
     </>
   )
 }

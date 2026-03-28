@@ -1,14 +1,11 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, no-empty */
 import { useState, useRef, useCallback, useEffect } from 'react'
-import { GoogleGenAI, Modality, Type, type Session } from '@google/genai'
-import { GIO_MODEL, GIO_SYSTEM_PROMPT } from '../constants'
+import { getWebSocketUrl, splitDataUrl } from '../lib/realtime'
 
 export function useGioSession({
-  getApiKey,
   fadeVolume,
   latestScreenshot,
 }: {
-  getApiKey: () => string
   fadeVolume: (targetVolume: number, durationMs: number) => void
   latestScreenshot: string | null
 }) {
@@ -17,7 +14,7 @@ export function useGioSession({
   const [clipboardContent, setClipboardContent] = useState<string | null>(null)
   const [gioError, setGioError] = useState<string | null>(null)
 
-  const gioSessionRef = useRef<Session | null>(null)
+  const gioSocketRef = useRef<WebSocket | null>(null)
   const gioMicStreamRef = useRef<MediaStream | null>(null)
   const gioMicProcessorRef = useRef<{
     source: MediaStreamAudioSourceNode
@@ -31,23 +28,31 @@ export function useGioSession({
   const pendingClipboardWriteRef = useRef<string | null>(null)
   const wakeWordRecognitionRef = useRef<any>(null)
   const wakeWordTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const connectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isUnmountingRef = useRef(false)
   const latestScreenshotRef = useRef(latestScreenshot)
+  const sentAudioChunkCountRef = useRef(0)
 
   useEffect(() => {
     latestScreenshotRef.current = latestScreenshot
   }, [latestScreenshot])
 
-  // Single helper for all clipboard write attempts.
-  // Tries the Clipboard API first, falls back to execCommand.
-  // Clears pendingClipboardWriteRef on success so retries don't duplicate.
+  const appendTranscript = useCallback((text: string) => {
+    const trimmed = text.trim()
+    if (!trimmed) return
+    const next = gioTranscriptRef.current
+      ? `${gioTranscriptRef.current} ${trimmed}`
+      : trimmed
+    gioTranscriptRef.current = next
+    setGioTranscript(next)
+  }, [])
+
   const writeToClipboard = async (content: string) => {
     try {
       await navigator.clipboard.writeText(content)
       pendingClipboardWriteRef.current = null
-      console.log('[Gio] Clipboard written, length:', content.length)
       return
-    } catch { /* fall through to execCommand */ }
+    } catch {}
     try {
       const ta = document.createElement('textarea')
       ta.value = content
@@ -58,9 +63,29 @@ export function useGioSession({
       document.execCommand('copy')
       document.body.removeChild(ta)
       pendingClipboardWriteRef.current = null
-      console.log('[Gio] Clipboard written via execCommand, length:', content.length)
-    } catch { /* both paths failed — content stays in pendingClipboardWriteRef for retry */ }
+    } catch {}
   }
+
+  const sendSocketMessage = useCallback((payload: Record<string, unknown>) => {
+    const socket = gioSocketRef.current
+    if (!socket || socket.readyState !== WebSocket.OPEN) return false
+    socket.send(JSON.stringify(payload))
+    return true
+  }, [])
+
+  const sendLatestScreenshot = useCallback(() => {
+    const screenshot = latestScreenshotRef.current
+    if (!screenshot) return
+    const payload = splitDataUrl(screenshot)
+    if (!payload) return
+
+    sendSocketMessage({
+      type: 'image',
+      data: payload.data,
+      mimeType: payload.mimeType,
+      text: 'This is the user\'s current screen. Use it as context if it helps answer or act.',
+    })
+  }, [sendSocketMessage])
 
   const scheduleGioAudioChunk = async (base64Data: string, mimeType?: string) => {
     if (!base64Data) return
@@ -98,13 +123,11 @@ export function useGioSession({
   }
 
   const endGioSession = useCallback(async () => {
-    // Always attempt clipboard write first — this runs with a user gesture
-    // when the user taps stop, which is the most reliable write opportunity.
     if (pendingClipboardWriteRef.current) {
       await writeToClipboard(pendingClipboardWriteRef.current)
     }
 
-    if (!isGioActiveRef.current && !gioSessionRef.current && !gioMicStreamRef.current) return
+    if (!isGioActiveRef.current && !gioSocketRef.current && !gioMicStreamRef.current) return
 
     isGioActiveRef.current = false
     setIsGioActive(false)
@@ -120,17 +143,27 @@ export function useGioSession({
         gioMicProcessorRef.current.source.disconnect()
         gioMicProcessorRef.current.processor.disconnect()
         await gioMicProcessorRef.current.context.close()
-      } catch { /* ignore */ }
+      } catch {}
       gioMicProcessorRef.current = null
     }
+
     if (gioMicStreamRef.current) {
-      gioMicStreamRef.current.getTracks().forEach((t) => t.stop())
+      gioMicStreamRef.current.getTracks().forEach((track) => track.stop())
       gioMicStreamRef.current = null
     }
 
-    if (gioSessionRef.current) {
-      try { gioSessionRef.current.close() } catch { /* ignore */ }
-      gioSessionRef.current = null
+    if (gioSocketRef.current) {
+      try {
+        if (connectTimeoutRef.current) {
+          clearTimeout(connectTimeoutRef.current)
+          connectTimeoutRef.current = null
+        }
+        if (gioSocketRef.current.readyState === WebSocket.OPEN) {
+          gioSocketRef.current.send(JSON.stringify({ type: 'close' }))
+        }
+        gioSocketRef.current.close()
+      } catch {}
+      gioSocketRef.current = null
     }
 
     fadeVolume(1.0, 800)
@@ -139,20 +172,13 @@ export function useGioSession({
   const startGioSession = useCallback(async () => {
     if (isGioActiveRef.current) return
 
-    const apiKey = getApiKey()
-    if (!apiKey) {
-      setGioError('No API key configured')
-      return
-    }
-
-    // Attempt to flush any pending clipboard write from the previous session
-    // before clearing it — starting a new session is a user gesture.
     if (pendingClipboardWriteRef.current) {
       void writeToClipboard(pendingClipboardWriteRef.current)
     }
 
     gioTranscriptRef.current = ''
     pendingClipboardWriteRef.current = null
+    sentAudioChunkCountRef.current = 0
     setGioTranscript('')
     setGioError(null)
     setClipboardContent(null)
@@ -160,146 +186,180 @@ export function useGioSession({
 
     isGioActiveRef.current = true
     setIsGioActive(true)
-
     fadeVolume(0.2, 600)
 
     try {
       const micStream = await navigator.mediaDevices.getUserMedia({ audio: true })
       gioMicStreamRef.current = micStream
 
-      const client = new GoogleGenAI({ apiKey, apiVersion: 'v1alpha' })
-      const session = await client.live.connect({
-        model: GIO_MODEL,
-        config: {
-          responseModalities: [Modality.AUDIO],
-          systemInstruction: GIO_SYSTEM_PROMPT,
-          tools: [{
-            functionDeclarations: [{
-              name: 'saveToClipboard',
-              description: 'Saves drafted or generated text content directly to the user\'s clipboard. Call this whenever you have composed a complete piece of content the user asked you to write.',
-              parameters: {
-                type: Type.OBJECT,
-                properties: {
-                  content: {
-                    type: Type.STRING,
-                    description: 'The complete text content to copy to the clipboard, ready to paste.',
-                  },
-                },
-                required: ['content'],
-              },
-            }],
-          }],
-        },
-        callbacks: {
-          onmessage: (msg) => {
-            const textChunks: string[] = []
-            if (msg.text) textChunks.push(msg.text)
-            const transcription = (msg as any).serverContent?.outputTranscription?.text
-            if (transcription) textChunks.push(transcription)
-            const parts = msg.serverContent?.modelTurn?.parts ?? []
-            for (const part of parts) {
-              if ((part as any).text) textChunks.push((part as any).text)
-              if (part.inlineData?.data) {
-                void scheduleGioAudioChunk(part.inlineData.data, part.inlineData.mimeType)
-              }
-            }
-            if (textChunks.length > 0) {
-              const next = gioTranscriptRef.current + textChunks.join('')
-              gioTranscriptRef.current = next
-              setGioTranscript(next)
-            }
+      const socketUrl = getWebSocketUrl('/api/live')
+      console.info('[Gio] Connecting to', socketUrl)
+      const socket = new WebSocket(socketUrl)
+      gioSocketRef.current = socket
+      connectTimeoutRef.current = setTimeout(() => {
+        if (gioSocketRef.current === socket && socket.readyState === WebSocket.CONNECTING) {
+          console.error('[Gio] Connection timed out before websocket open')
+          setGioError('Timed out connecting to Gio')
+          fadeVolume(1.0, 800)
+          isGioActiveRef.current = false
+          setIsGioActive(false)
+          socket.close()
+        }
+      }, 8000)
 
-            const calls = (msg as any).toolCall?.functionCalls ?? []
-            for (const call of calls) {
-              if (call.name === 'saveToClipboard') {
-                const content: string = call.args?.content ?? ''
-                if (content) {
-                  setClipboardContent(content)
-                  pendingClipboardWriteRef.current = content
-                  // Try immediately — works if the page has focus (tab is active).
-                  // If it fails, pendingClipboardWriteRef stays set for retry via
-                  // onclose, endGioSession, or the window focus listener.
-                  void writeToClipboard(content)
-                }
-                try {
-                  gioSessionRef.current?.sendToolResponse({
-                    functionResponses: [{
-                      id: call.id,
-                      name: call.name,
-                      response: { output: { success: true } },
-                    }],
-                  })
-                } catch (e) {
-                  console.warn('[Gio] Tool response send failed:', e)
-                }
-              }
-            }
-          },
-          onerror: (err: unknown) => {
-            console.error('[Gio] Session error:', err)
-            setGioError('Gio is unavailable')
-            fadeVolume(1.0, 800)
-            isGioActiveRef.current = false
-            setIsGioActive(false)
-          },
-          onclose: (event?: CloseEvent) => {
-            console.log('[Gio] Session closed', event?.code, event?.reason)
-            gioSessionRef.current = null
-            if (isGioActiveRef.current) {
-              fadeVolume(1.0, 800)
-              isGioActiveRef.current = false
-              setIsGioActive(false)
-            }
-            // Session closed (naturally or otherwise) — try to flush any pending clipboard write.
-            if (pendingClipboardWriteRef.current) {
-              void writeToClipboard(pendingClipboardWriteRef.current)
-            }
-          },
-        },
-      })
+      socket.onopen = () => {
+        console.info('[Gio] WebSocket open')
+      }
 
-      gioSessionRef.current = session
+      socket.onmessage = (event) => {
+        console.debug('[Gio] Raw message', event.data)
+        const message = JSON.parse(String(event.data)) as {
+          type?: string
+          id?: string
+          name?: string
+          ok?: boolean
+          args?: { content?: string }
+          data?: string
+          mimeType?: string
+          text?: string
+          message?: string
+        }
+
+        if (message.type === 'ready') {
+          if (connectTimeoutRef.current) {
+            clearTimeout(connectTimeoutRef.current)
+            connectTimeoutRef.current = null
+          }
+          sendLatestScreenshot()
+          return
+        }
+
+        if (message.type === 'input_transcript' && message.text) {
+          console.info('[Gio] Heard:', message.text)
+          return
+        }
+
+        if (message.type === 'output_transcript' && message.text) {
+          console.info('[Gio] Said:', message.text)
+          appendTranscript(message.text)
+          return
+        }
+
+        if (message.type === 'audio' && message.data) {
+          void scheduleGioAudioChunk(message.data, message.mimeType)
+          return
+        }
+
+        if (message.type === 'transcript' && message.text) {
+          appendTranscript(message.text)
+          return
+        }
+
+        if (message.type === 'tool_result_debug') {
+          const debugMessage = message.message ?? 'Tool completed'
+          if (message.name) {
+            if (message.ok === false) {
+              console.error(`[Gio][Tool:${message.name}]`, debugMessage)
+            } else {
+              console.info(`[Gio][Tool:${message.name}]`, debugMessage)
+            }
+          }
+          return
+        }
+
+        if (message.type === 'tool_call' && message.name === 'saveToClipboard') {
+          const content = message.args?.content ?? ''
+          if (content) {
+            setClipboardContent(content)
+            pendingClipboardWriteRef.current = content
+            void writeToClipboard(content)
+          }
+
+          sendSocketMessage({
+            type: 'tool_result',
+            id: message.id,
+            response: { output: { success: true } },
+          })
+          return
+        }
+
+        if (message.type === 'error') {
+          setGioError(message.message ?? 'Gio is unavailable')
+          fadeVolume(1.0, 800)
+          isGioActiveRef.current = false
+          setIsGioActive(false)
+        }
+      }
+
+      socket.onerror = (event) => {
+        console.error('[Gio] WebSocket error', event)
+        setGioError('Gio is unavailable')
+      }
+
+      socket.onclose = (event) => {
+        console.warn('[Gio] WebSocket closed', event.code, event.reason)
+        if (connectTimeoutRef.current) {
+          clearTimeout(connectTimeoutRef.current)
+          connectTimeoutRef.current = null
+        }
+        gioSocketRef.current = null
+        if (isGioActiveRef.current) {
+          fadeVolume(1.0, 800)
+          isGioActiveRef.current = false
+          setIsGioActive(false)
+        }
+        if (pendingClipboardWriteRef.current) {
+          void writeToClipboard(pendingClipboardWriteRef.current)
+        }
+      }
 
       const micContext = new AudioContext({ sampleRate: 16000 })
+      if (micContext.state === 'suspended') {
+        await micContext.resume()
+      }
       const actualRate = micContext.sampleRate
       const micSource = micContext.createMediaStreamSource(micStream)
       const processor = micContext.createScriptProcessor(2048, 1, 1)
 
       processor.onaudioprocess = (event: AudioProcessingEvent) => {
-        if (!gioSessionRef.current || !isGioActiveRef.current) return
+        const activeSocket = gioSocketRef.current
+        if (!activeSocket || activeSocket.readyState !== WebSocket.OPEN || !isGioActiveRef.current) return
+
         const inputData = event.inputBuffer.getChannelData(0)
         const pcm16 = new Int16Array(inputData.length)
         for (let i = 0; i < inputData.length; i++) {
-          const s = Math.max(-1, Math.min(1, inputData[i]))
-          pcm16[i] = s < 0 ? s * 32768 : s * 32767
+          const sample = Math.max(-1, Math.min(1, inputData[i]))
+          pcm16[i] = sample < 0 ? sample * 32768 : sample * 32767
         }
         const bytes = new Uint8Array(pcm16.buffer)
         let binary = ''
         for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i])
-        try {
-          gioSessionRef.current.sendRealtimeInput({
-            audio: { data: btoa(binary), mimeType: `audio/pcm;rate=${actualRate}` },
-          })
-        } catch { }
+        activeSocket.send(JSON.stringify({
+          type: 'audio',
+          data: btoa(binary),
+          mimeType: `audio/pcm;rate=${actualRate}`,
+        }))
+        sentAudioChunkCountRef.current += 1
+        if (sentAudioChunkCountRef.current <= 3) {
+          console.info('[Gio] Sent mic audio chunk', sentAudioChunkCountRef.current, `rate=${actualRate}`, `samples=${inputData.length}`)
+        }
       }
 
       micSource.connect(processor)
       processor.connect(micContext.destination)
       gioMicProcessorRef.current = { source: micSource, processor, context: micContext }
-
     } catch (err) {
-      console.error('[Gio] Error starting session:', err)
       const isPermission = err instanceof Error && (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError')
       setGioError(isPermission ? 'Microphone access denied' : 'Gio is unavailable')
       fadeVolume(1.0, 800)
       isGioActiveRef.current = false
       setIsGioActive(false)
       if (gioMicStreamRef.current) {
-        gioMicStreamRef.current.getTracks().forEach((t) => t.stop())
+        gioMicStreamRef.current.getTracks().forEach((track) => track.stop())
         gioMicStreamRef.current = null
       }
     }
-  }, [fadeVolume, getApiKey])
+  }, [appendTranscript, fadeVolume, sendLatestScreenshot, sendSocketMessage])
 
   const startGioSessionRef = useRef(startGioSession)
   const endGioSessionRef = useRef(endGioSession)
@@ -307,6 +367,12 @@ export function useGioSession({
     startGioSessionRef.current = startGioSession
     endGioSessionRef.current = endGioSession
   }, [startGioSession, endGioSession])
+
+  useEffect(() => {
+    if (isGioActiveRef.current) {
+      sendLatestScreenshot()
+    }
+  }, [latestScreenshot, sendLatestScreenshot])
 
   useEffect(() => {
     const SpeechRecognitionAPI = window.SpeechRecognition ?? window.webkitSpeechRecognition
@@ -321,7 +387,6 @@ export function useGioSession({
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const text = event.results[i][0].transcript.toLowerCase()
         if (text.includes('hey gio') && !isGioActiveRef.current) {
-          console.log('[Gio] Wake word detected')
           void startGioSessionRef.current()
           wakeWordTimeoutRef.current = setTimeout(() => {
             void endGioSessionRef.current()
@@ -340,7 +405,7 @@ export function useGioSession({
     recognition.onend = () => {
       if (!isUnmountingRef.current) {
         wakeRestartTimer = setTimeout(() => {
-          try { recognition.start() } catch { }
+          try { recognition.start() } catch {}
         }, 1000)
       }
     }
@@ -348,18 +413,15 @@ export function useGioSession({
     try {
       recognition.start()
       wakeWordRecognitionRef.current = recognition
-    } catch (err) { }
+    } catch {}
 
     return () => {
       if (wakeRestartTimer) clearTimeout(wakeRestartTimer)
       recognition.onend = null
-      try { recognition.stop() } catch { }
+      try { recognition.stop() } catch {}
     }
   }, [])
 
-  // Retry clipboard write whenever the main page regains focus.
-  // This is the key fallback for when the user is working in the PiP
-  // and the main page wasn't focused when saveToClipboard fired.
   useEffect(() => {
     const onFocus = () => {
       if (pendingClipboardWriteRef.current) {

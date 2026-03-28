@@ -86,9 +86,8 @@ export function HeroPanel({
       </div>
 
       <p className="mt-[18px] text-slate-200/70 text-[0.72rem] tracking-[0.08em] uppercase">
-        Use `VITE_GEMINI_API_KEY` in your local environment. When supported, the app
-        will try to move into Document Picture-in-Picture if you switch away while
-        streaming.
+        Gemini now runs through your backend session. When supported, the app will try
+        to move into Document Picture-in-Picture if you switch away while streaming.
       </p>
 
       {pipMessage ? <p className="mt-[18px] text-slate-200/70 text-[0.72rem] tracking-[0.08em] uppercase">{pipMessage}</p> : null}

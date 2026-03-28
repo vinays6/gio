@@ -12,7 +12,7 @@ export function useUser() {
 
   const fetchUser = useCallback(async () => {
     try {
-      const res = await fetch('/api/user')
+      const res = await fetch('/api/user', { credentials: 'include' })
       if (res.ok) {
         const data = await res.json()
         setUser(data)
@@ -35,6 +35,7 @@ export function useUser() {
     try {
       const res = await fetch('/api/user/preferences', {
         method: 'POST',
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json'
         },
