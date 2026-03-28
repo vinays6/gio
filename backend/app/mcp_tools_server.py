@@ -1,4 +1,4 @@
-"""Built-in MCP server: email, Discord, and Google Docs actions."""
+"""Built-in MCP server: email, music preferences, Google Docs, and Calendar actions."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import logging
 import os
 from pathlib import Path
 
-import httpx
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("music-agent-builtin")
@@ -23,21 +22,31 @@ def send_email(to: str, subject: str, body: str) -> str:
 
 
 @mcp.tool()
-def send_discord_message(message: str, username: str | None = None) -> str:
-    """Post a message to Discord via incoming webhook. Set DISCORD_WEBHOOK_URL."""
-    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL", "").strip()
-    if not webhook_url:
-        return "Discord not configured: set DISCORD_WEBHOOK_URL to an incoming webhook URL."
+def update_music_preferences(preferences: str) -> str:
+    """Update the signed-in user's saved music preferences."""
+    return (
+        "This tool is handled by the live backend using the authenticated user's "
+        "app session."
+    )
 
-    payload: dict[str, str] = {"content": message[:2000]}
-    if username:
-        payload["username"] = username[:80]
 
-    with httpx.Client(timeout=30) as client:
-        response = client.post(webhook_url, json=payload)
-        response.raise_for_status()
-
-    return "Posted the message to Discord."
+@mcp.tool()
+def update_music_generation(
+    prompt: str | None = None,
+    bpm: float | None = None,
+    use_inferred_bpm: bool | None = None,
+    density: float | None = None,
+    use_inferred_density: bool | None = None,
+    brightness: float | None = None,
+    use_inferred_brightness: bool | None = None,
+    vocals_enabled: bool | None = None,
+    only_bass_and_drums: bool | None = None,
+) -> str:
+    """Update frontend music generation controls for the signed-in user."""
+    return (
+        "This tool is handled by the live backend and updates the frontend music "
+        "generation controls directly."
+    )
 
 
 @mcp.tool()
@@ -103,6 +112,22 @@ def create_google_doc(
     return (
         f"Created Google Doc {title!r}: "
         f"https://docs.google.com/document/d/{document_id}/edit"
+    )
+
+
+@mcp.tool()
+def create_google_calendar_event(
+    title: str,
+    start_iso: str,
+    end_iso: str,
+    description: str | None = None,
+    location: str | None = None,
+    timezone_name: str | None = None,
+) -> str:
+    """Create a Google Calendar event with the authenticated user's Google account."""
+    return (
+        "This tool is handled by the live backend using the authenticated user's "
+        "Google OAuth session."
     )
 
 

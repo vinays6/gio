@@ -7,14 +7,21 @@ import { LandingPage } from './components/LandingPage'
 import './index.css'
 
 function App() {
-  const { user, loading: userLoading, setPreferences } = useUser()
+  const { user, loading: userLoading, setPreferences, applyPreferencesUpdate, logout } = useUser()
 
   const lyria = useLyriaStream()
   const capture = useScreenCapture({
     applyPrompt: lyria.applyPrompt,
     userPreferences: user?.preferences,
   })
-  const gio = useGioSession({ fadeVolume: lyria.fadeVolume, latestScreenshot: capture.latestScreenshot })
+  const gio = useGioSession({
+    fadeVolume: lyria.fadeVolume,
+    latestScreenshot: capture.latestScreenshot,
+    onPreferencesUpdated: applyPreferencesUpdate,
+    onMusicGenerationUpdated: (patch) => {
+      void lyria.applyAssistantUpdate(patch)
+    },
+  })
 
   const pip = useDocumentPiP(
     {
@@ -91,6 +98,7 @@ function App() {
         user={user}
         userLoading={userLoading}
         setPreferences={setPreferences}
+        logout={logout}
       />
       {/* Hidden elements for screen capture */}
       <video ref={capture.setVideoElement} style={{ display: 'none' }} muted playsInline />

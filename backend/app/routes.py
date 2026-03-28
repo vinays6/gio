@@ -103,6 +103,12 @@ def get_user():
     )
 
 
+@api_bp.route("/api/logout", methods=["POST"])
+def logout():
+    session.clear()
+    return jsonify({"success": True})
+
+
 @api_bp.route("/api/user/preferences", methods=["POST"])
 def set_preferences():
     user = _get_user_from_session()

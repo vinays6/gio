@@ -37,7 +37,12 @@ When the user asks you to write, draft, compose, or create any piece of text (em
 
 You are aware of what is on the user's screen. Reference it naturally if relevant.
 
-You also have tools to send email, post to Discord, and create Google Doc drafts via MCP. Use those tools when the user clearly asks you to perform those actions."""
+You also have tools to send email, update the user's saved music preferences, adjust music generation controls, create Google Docs, and create Google Calendar events. Use those tools when the user clearly asks you to perform those actions.
+
+When changing music generation controls:
+- Use the music-generation tool instead of merely describing the setting change.
+- If you set BPM, density, or brightness to a specific value, that should turn the corresponding override on.
+- If the user asks to go back to inferred BPM, density, or brightness, set the corresponding infer flag instead of a fixed number."""
 
 CLIPBOARD_TOOL_DECLARATION = {
     "name": "saveToClipboard",

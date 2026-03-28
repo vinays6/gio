@@ -88,6 +88,7 @@ interface LandingPageProps {
   user: User | null
   userLoading: boolean
   setPreferences: (prefs: string) => Promise<boolean>
+  logout: () => Promise<boolean>
 }
 
 const MODELS = [
@@ -114,7 +115,7 @@ export function LandingPage({
   isGioActive, startGioSession, endGioSession, gioTranscript, clipboardContent,
   gioError, setClipboardContent, pendingClipboardWriteRef,
   isDocumentPiPSupported, openDocumentPiP, pipMessage,
-  user, userLoading, setPreferences,
+  user, userLoading, setPreferences, logout,
 }: LandingPageProps) {
   const [debugOpen, setDebugOpen] = useState(false)
   const [prefsInput, setPrefsInput] = useState('')
@@ -184,7 +185,26 @@ export function LandingPage({
         {!userLoading && (
           <div style={{ textAlign: 'center', marginBottom: 8, fontSize: 12, color: 'var(--text-muted)' }}>
             {user
-              ? <span>Signed in as <strong style={{ color: 'var(--text-primary)' }}>{user.name || user.email}</strong></span>
+              ? (
+                <span>
+                  Signed in as <strong style={{ color: 'var(--text-primary)' }}>{user.name || user.email}</strong>{' '}
+                  <button
+                    onClick={() => { void logout() }}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: 'var(--gio-green)',
+                      textDecoration: 'underline',
+                      cursor: 'pointer',
+                      fontWeight: 600,
+                      padding: 0,
+                      fontSize: 12,
+                    }}
+                  >
+                    Log out
+                  </button>
+                </span>
+              )
               : <a href="/login" style={{ color: 'var(--gio-green)', textDecoration: 'none', fontWeight: 600 }}>Sign in with Google</a>
             }
           </div>

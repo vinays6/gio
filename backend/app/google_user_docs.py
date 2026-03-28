@@ -6,7 +6,9 @@ import base64
 from datetime import datetime
 import logging
 from email.mime.text import MIMEText
+import os
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import text
 
@@ -23,7 +25,52 @@ GOOGLE_USER_SCOPES = [
     "https://www.googleapis.com/auth/documents",
     "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/calendar.events",
 ]
+
+
+def _datetime_has_timezone(value: str) -> bool:
+    trimmed = (value or "").strip()
+    if not trimmed:
+        return False
+    return trimmed.endswith("Z") or "+" in trimmed[10:] or "-" in trimmed[10:]
+
+
+def _is_valid_iana_timezone(value: str) -> bool:
+    try:
+        ZoneInfo(value)
+        return True
+    except Exception:
+        return False
+
+
+def _default_calendar_timezone() -> str | None:
+    configured = (os.getenv("DEFAULT_CALENDAR_TIMEZONE") or "").strip()
+    if configured and _is_valid_iana_timezone(configured):
+        return configured
+
+    local_tz = datetime.now().astimezone().tzinfo
+    if local_tz is not None:
+        tz_key = getattr(local_tz, "key", None)
+        if tz_key and _is_valid_iana_timezone(str(tz_key)):
+            return str(tz_key)
+
+    return None
+
+
+def _coerce_iso_with_timezone(value: str, timezone_name: str | None = None) -> str:
+    parsed = datetime.fromisoformat(value.strip())
+    if parsed.tzinfo is not None:
+        return parsed.isoformat()
+
+    if timezone_name and _is_valid_iana_timezone(timezone_name):
+        return parsed.replace(tzinfo=ZoneInfo(timezone_name)).isoformat()
+
+    local_tz = datetime.now().astimezone().tzinfo
+    if local_tz is not None:
+        return parsed.replace(tzinfo=local_tz).isoformat()
+
+    return parsed.replace(tzinfo=ZoneInfo("UTC")).isoformat()
 
 
 def _normalize_scope(scope_value: Any) -> str:
@@ -128,8 +175,6 @@ def create_google_doc_for_user(
                 ),
                 "isError": True,
             }
-
-        import os
 
         credentials = Credentials(
             token=user.google_access_token,
@@ -256,8 +301,6 @@ def send_gmail_for_user(user_id: int, to: str, subject: str, body: str) -> dict[
                 "isError": True,
             }
 
-        import os
-
         credentials = Credentials(
             token=user.google_access_token,
             refresh_token=user.google_refresh_token,
@@ -331,5 +374,160 @@ def send_gmail_for_user(user_id: int, to: str, subject: str, body: str) -> dict[
 
     return {
         "text": f"Email sent to {to} with subject {subject!r}.",
+        "isError": False,
+    }
+
+
+def create_calendar_event_for_user(
+    user_id: int,
+    title: str,
+    start_iso: str,
+    end_iso: str,
+    description: str | None = None,
+    location: str | None = None,
+    timezone_name: str | None = None,
+    fallback_timezone_name: str | None = None,
+) -> dict[str, Any]:
+    try:
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+        from googleapiclient.discovery import build
+        from googleapiclient.errors import HttpError
+    except ImportError:
+        return {
+            "text": (
+                "Google Calendar dependencies are missing in the backend environment. "
+                "Install requirements.txt so google-api-python-client and google-auth are available."
+            ),
+            "isError": True,
+        }
+
+    with session_scope() as db_session:
+        user = db_session.get(User, user_id)
+        if not user or not user.google_access_token:
+            return {
+                "text": (
+                    "Google Calendar is not connected for this user. Sign in again with Google "
+                    "to grant Calendar access."
+                ),
+                "isError": True,
+            }
+
+        scopes = (
+            user.google_token_scope.split()
+            if user.google_token_scope
+            else list(GOOGLE_USER_SCOPES)
+        )
+        if "https://www.googleapis.com/auth/calendar.events" not in set(scopes):
+            return {
+                "text": (
+                    "Google Calendar access has not been granted for this user yet. "
+                    "Sign out and sign in again to grant Calendar permissions."
+                ),
+                "isError": True,
+            }
+
+        import os
+
+        credentials = Credentials(
+            token=user.google_access_token,
+            refresh_token=user.google_refresh_token,
+            token_uri=GOOGLE_TOKEN_URI,
+            client_id=os.getenv("GOOGLE_CLIENT_ID"),
+            client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
+            scopes=scopes,
+            expiry=(
+                datetime.utcfromtimestamp(user.google_token_expiry)
+                if user.google_token_expiry
+                else None
+            ),
+        )
+
+        try:
+            if not credentials.valid:
+                if credentials.refresh_token:
+                    credentials.refresh(Request())
+                    user.google_access_token = credentials.token
+                    if credentials.refresh_token:
+                        user.google_refresh_token = credentials.refresh_token
+                    if credentials.expiry:
+                        user.google_token_expiry = int(credentials.expiry.timestamp())
+                    if credentials.scopes:
+                        user.google_token_scope = " ".join(credentials.scopes)
+                else:
+                    return {
+                        "text": (
+                            "Google Calendar access expired for this user. Sign in again with Google "
+                            "to refresh permissions."
+                        ),
+                        "isError": True,
+                    }
+
+            calendar_service = build(
+                "calendar", "v3", credentials=credentials, cache_discovery=False
+            )
+            explicit_timezone = (timezone_name or "").strip()
+            fallback_timezone = (fallback_timezone_name or "").strip()
+            resolved_timezone = (
+                explicit_timezone
+                if explicit_timezone and _is_valid_iana_timezone(explicit_timezone)
+                else (
+                    fallback_timezone
+                    if fallback_timezone and _is_valid_iana_timezone(fallback_timezone)
+                    else _default_calendar_timezone()
+                )
+            )
+
+            event_body: dict[str, Any] = {
+                "summary": title,
+                "start": {
+                    "dateTime": (
+                        start_iso
+                        if _datetime_has_timezone(start_iso)
+                        else _coerce_iso_with_timezone(start_iso, resolved_timezone)
+                    )
+                },
+                "end": {
+                    "dateTime": (
+                        end_iso
+                        if _datetime_has_timezone(end_iso)
+                        else _coerce_iso_with_timezone(end_iso, resolved_timezone)
+                    )
+                },
+            }
+            if description:
+                event_body["description"] = description
+            if location:
+                event_body["location"] = location
+
+            created = calendar_service.events().insert(
+                calendarId="primary",
+                body=event_body,
+            ).execute()
+            html_link = created.get("htmlLink") or ""
+        except HttpError as exc:
+            log.exception(
+                "User Google Calendar event creation failed for user_id=%s title=%r",
+                user_id,
+                title,
+            )
+            return {
+                "text": f"Google Calendar event creation failed: {exc}",
+                "isError": True,
+            }
+        except Exception as exc:
+            log.exception(
+                "Unexpected user Google Calendar event creation failure for user_id=%s title=%r",
+                user_id,
+                title,
+            )
+            return {
+                "text": f"Google Calendar event creation failed: {exc}",
+                "isError": True,
+            }
+
+    link_suffix = f" {html_link}" if html_link else ""
+    return {
+        "text": f"Created Google Calendar event {title!r}.{link_suffix}".strip(),
         "isError": False,
     }

@@ -3,6 +3,10 @@
     "builtin": {
       "command": "python",
       "args": ["-m", "app.mcp_tools_server"]
+    },
+    "browserbase": {
+      "type": "http",
+      "url": "https://mcp.browserbase.com/mcp?browserbaseApiKey=${BROWSERBASE_API_KEY}"
     }
   }
 }

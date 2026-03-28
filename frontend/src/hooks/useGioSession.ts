@@ -5,9 +5,13 @@ import { getWebSocketUrl, splitDataUrl } from '../lib/realtime'
 export function useGioSession({
   fadeVolume,
   latestScreenshot,
+  onPreferencesUpdated,
+  onMusicGenerationUpdated,
 }: {
   fadeVolume: (targetVolume: number, durationMs: number) => void
   latestScreenshot: string | null
+  onPreferencesUpdated?: (preferences: string) => void
+  onMusicGenerationUpdated?: (patch: Record<string, unknown>) => void
 }) {
   const [isGioActive, setIsGioActive] = useState(false)
   const [gioTranscript, setGioTranscript] = useState('')
@@ -218,6 +222,8 @@ export function useGioSession({
           id?: string
           name?: string
           ok?: boolean
+          preferences?: string
+          patch?: Record<string, unknown>
           args?: { content?: string }
           data?: string
           mimeType?: string
@@ -229,6 +235,13 @@ export function useGioSession({
           if (connectTimeoutRef.current) {
             clearTimeout(connectTimeoutRef.current)
             connectTimeoutRef.current = null
+          }
+          const browserTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone
+          if (browserTimeZone) {
+            sendSocketMessage({
+              type: 'client_context',
+              timeZone: browserTimeZone,
+            })
           }
           sendLatestScreenshot()
           return
@@ -264,6 +277,18 @@ export function useGioSession({
               console.info(`[Gio][Tool:${message.name}]`, debugMessage)
             }
           }
+          return
+        }
+
+        if (message.type === 'preferences_updated' && message.preferences) {
+          console.info('[Gio] Preferences updated:', message.preferences)
+          onPreferencesUpdated?.(message.preferences)
+          return
+        }
+
+        if (message.type === 'music_generation_updated' && message.patch) {
+          console.info('[Gio] Music generation updated:', message.patch)
+          onMusicGenerationUpdated?.(message.patch)
           return
         }
 
@@ -359,7 +384,7 @@ export function useGioSession({
         gioMicStreamRef.current = null
       }
     }
-  }, [appendTranscript, fadeVolume, sendLatestScreenshot, sendSocketMessage])
+  }, [appendTranscript, fadeVolume, onMusicGenerationUpdated, onPreferencesUpdated, sendLatestScreenshot, sendSocketMessage])
 
   const startGioSessionRef = useRef(startGioSession)
   const endGioSessionRef = useRef(endGioSession)

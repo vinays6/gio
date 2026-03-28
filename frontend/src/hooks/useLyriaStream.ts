@@ -20,6 +20,18 @@ type MusicGenerationConfig = {
   musicGenerationMode: MusicGenerationMode
 }
 
+type AssistantMusicGenerationPatch = {
+  prompt?: string
+  bpm?: number
+  use_inferred_bpm?: boolean
+  density?: number
+  use_inferred_density?: boolean
+  brightness?: number
+  use_inferred_brightness?: boolean
+  vocals_enabled?: boolean
+  only_bass_and_drums?: boolean
+}
+
 export function useLyriaStream() {
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT)
   const [bpm, setBpm] = useState(DEFAULT_BPM)
@@ -402,6 +414,68 @@ export function useLyriaStream() {
     }
   }, [applyConfig])
 
+  const applyAssistantUpdate = useCallback(async (patch: AssistantMusicGenerationPatch) => {
+    const nextPrompt = typeof patch.prompt === 'string' ? patch.prompt.trim() || prompt : prompt
+    const nextVocalsEnabled = typeof patch.vocals_enabled === 'boolean' ? patch.vocals_enabled : vocalsEnabled
+    const nextOnlyBassAndDrums = typeof patch.only_bass_and_drums === 'boolean'
+      ? patch.only_bass_and_drums
+      : onlyBassAndDrums
+
+    const nextBpm = typeof patch.bpm === 'number' ? patch.bpm : bpm
+    const nextDensity = typeof patch.density === 'number' ? patch.density : density
+    const nextBrightness = typeof patch.brightness === 'number' ? patch.brightness : brightness
+
+    const nextBpmOverridden = patch.use_inferred_bpm === true ? false : typeof patch.bpm === 'number' ? true : bpmOverridden
+    const nextDensityOverridden = patch.use_inferred_density === true ? false : typeof patch.density === 'number' ? true : densityOverridden
+    const nextBrightnessOverridden = patch.use_inferred_brightness === true ? false : typeof patch.brightness === 'number' ? true : brightnessOverridden
+
+    setPrompt(nextPrompt)
+    setVocalsEnabled(nextVocalsEnabled)
+    setOnlyBassAndDrums(nextOnlyBassAndDrums)
+    setBpm(nextBpm)
+    setDensity(nextDensity)
+    setBrightness(nextBrightness)
+    setBpmOverridden(nextBpmOverridden)
+    setDensityOverridden(nextDensityOverridden)
+    setBrightnessOverridden(nextBrightnessOverridden)
+
+    if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return
+
+    const effectivePrompt = nextVocalsEnabled ? `${nextPrompt}, Vocals` : nextPrompt
+    sendSocketMessage({
+      type: 'set_weighted_prompts',
+      weightedPrompts: [{ text: effectivePrompt, weight: 1 }],
+    })
+
+    const nextConfig: MusicGenerationConfig = {
+      onlyBassAndDrums: nextOnlyBassAndDrums,
+      musicGenerationMode: nextVocalsEnabled ? 'VOCALIZATION' : 'QUALITY',
+    }
+    if (nextBpmOverridden) nextConfig.bpm = nextBpm
+    if (nextDensityOverridden) nextConfig.density = nextDensity
+    if (nextBrightnessOverridden) nextConfig.brightness = nextBrightness
+
+    sendSocketMessage({
+      type: 'set_music_generation_config',
+      musicGenerationConfig: nextConfig,
+    })
+    const previousConfig = lastAppliedConfigRef.current
+    const shouldResetContext = previousConfig !== null && previousConfig.bpm !== nextConfig.bpm
+    lastAppliedConfigRef.current = nextConfig
+    if (shouldResetContext) sendSocketMessage({ type: 'reset_context' })
+  }, [
+    bpm,
+    bpmOverridden,
+    brightness,
+    brightnessOverridden,
+    density,
+    densityOverridden,
+    onlyBassAndDrums,
+    prompt,
+    sendSocketMessage,
+    vocalsEnabled,
+  ])
+
   useEffect(() => {
     return () => {
       isUnmountingRef.current = true
@@ -421,6 +495,7 @@ export function useLyriaStream() {
     onlyBassAndDrums, setOnlyBassAndDrums,
     status, error,
     playStream, pauseStream, toggleVocals, syncPrompt, syncConfig, stopStream, applyPrompt, fadeVolume,
+    applyAssistantUpdate,
     analyserRef,
   }
 }

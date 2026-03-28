@@ -116,9 +116,37 @@ class _FakeAggregatedMCP:
     def __init__(self):
         self.function_declarations = [
             {
-                "name": "discord__send_message",
-                "description": "Send a Discord message",
-                "parameters": {"type": "object", "properties": {}},
+                "name": "builtin__update_music_preferences",
+                "description": "Update the user's saved music preferences",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "preferences": {"type": "string"},
+                    },
+                },
+            },
+            {
+                "name": "builtin__update_music_generation",
+                "description": "Update frontend music generation controls",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "prompt": {"type": "string"},
+                        "bpm": {"type": "number"},
+                    },
+                },
+            },
+            {
+                "name": "builtin__create_google_calendar_event",
+                "description": "Create a Google Calendar event",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "start_iso": {"type": "string"},
+                        "end_iso": {"type": "string"},
+                    },
+                },
             }
         ]
         self.connected = False
@@ -166,7 +194,9 @@ class RealtimeLiveServerTest(unittest.IsolatedAsyncioTestCase):
             ready_message = json.loads(await ws.recv())
             self.assertEqual(ready_message["type"], "ready")
             self.assertIn("saveToClipboard", ready_message["tools"])
-            self.assertIn("discord__send_message", ready_message["tools"])
+            self.assertIn("builtin__update_music_preferences", ready_message["tools"])
+            self.assertIn("builtin__update_music_generation", ready_message["tools"])
+            self.assertIn("builtin__create_google_calendar_event", ready_message["tools"])
 
             await ws.send(
                 json.dumps({"type": "text", "text": "Please draft a quick update"})

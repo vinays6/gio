@@ -22,8 +22,13 @@ from .gemini_constants import (
     GIO_SYSTEM_PROMPT,
     LYRIA_MODEL,
 )
-from .google_user_docs import create_google_doc_for_user, send_gmail_for_user
+from .google_user_docs import (
+    create_calendar_event_for_user,
+    create_google_doc_for_user,
+    send_gmail_for_user,
+)
 from .mcp_client import AggregatedMCP
+from .user_preferences import update_music_preferences_for_user
 from .util_gemini import (
     anonymous_gemini_access_enabled,
     build_live_system_instruction,
@@ -219,6 +224,7 @@ async def _handle_live(connection: ServerConnection) -> None:
         "tools": [{"function_declarations": function_declarations}],
     }
     pending_clipboard: dict[str, asyncio.Future] = {}
+    client_timezone: str | None = None
 
     async def execute_tool(name: str, fid: str, args: dict[str, Any]) -> dict[str, Any]:
         if name == CLIPBOARD_TOOL_NAME:
@@ -281,6 +287,130 @@ async def _handle_live(connection: ServerConnection) -> None:
                     str(args.get("subject") or "").strip(),
                     str(args.get("body") or "").strip(),
                 )
+            tool_text = (tool_payload.get("text") or "").strip()
+            log_level = logging.WARNING if tool_payload.get("isError") else logging.INFO
+            log.log(log_level, "Tool %s completed: %s", name, tool_text or tool_payload)
+            await _send_json(
+                connection,
+                {
+                    "type": "tool_result_debug",
+                    "name": name,
+                    "ok": not bool(tool_payload.get("isError")),
+                    "message": tool_text or json.dumps(tool_payload, ensure_ascii=False),
+                },
+            )
+            return {"result": tool_payload}
+
+        if name == "builtin__create_google_calendar_event":
+            if not auth_user_id:
+                tool_payload = {
+                    "text": "Google Calendar requires a signed-in user with Google OAuth access.",
+                    "isError": True,
+                }
+            else:
+                tool_payload = await asyncio.to_thread(
+                    create_calendar_event_for_user,
+                    int(auth_user_id),
+                    str(args.get("title") or "").strip(),
+                    str(args.get("start_iso") or "").strip(),
+                    str(args.get("end_iso") or "").strip(),
+                    (
+                        str(args.get("description")).strip()
+                        if args.get("description") is not None
+                        else None
+                    ),
+                    (
+                        str(args.get("location")).strip()
+                        if args.get("location") is not None
+                        else None
+                    ),
+                    (
+                        str(args.get("timezone_name")).strip()
+                        if args.get("timezone_name") is not None
+                        else None
+                    ),
+                    client_timezone,
+                )
+            tool_text = (tool_payload.get("text") or "").strip()
+            log_level = logging.WARNING if tool_payload.get("isError") else logging.INFO
+            log.log(log_level, "Tool %s completed: %s", name, tool_text or tool_payload)
+            await _send_json(
+                connection,
+                {
+                    "type": "tool_result_debug",
+                    "name": name,
+                    "ok": not bool(tool_payload.get("isError")),
+                    "message": tool_text or json.dumps(tool_payload, ensure_ascii=False),
+                },
+            )
+            return {"result": tool_payload}
+
+        if name == "builtin__update_music_preferences":
+            if not auth_user_id:
+                tool_payload = {
+                    "text": "Updating music preferences requires a signed-in user.",
+                    "isError": True,
+                }
+            else:
+                tool_payload = await asyncio.to_thread(
+                    update_music_preferences_for_user,
+                    int(auth_user_id),
+                    str(args.get("preferences") or "").strip(),
+                )
+            tool_text = (tool_payload.get("text") or "").strip()
+            log_level = logging.WARNING if tool_payload.get("isError") else logging.INFO
+            log.log(log_level, "Tool %s completed: %s", name, tool_text or tool_payload)
+            await _send_json(
+                connection,
+                {
+                    "type": "tool_result_debug",
+                    "name": name,
+                    "ok": not bool(tool_payload.get("isError")),
+                    "message": tool_text or json.dumps(tool_payload, ensure_ascii=False),
+                },
+            )
+            if not bool(tool_payload.get("isError")) and tool_payload.get("preferences"):
+                await _send_json(
+                    connection,
+                    {
+                        "type": "preferences_updated",
+                        "preferences": str(tool_payload["preferences"]),
+                    },
+                )
+            return {"result": tool_payload}
+
+        if name == "builtin__update_music_generation":
+            allowed_keys = {
+                "prompt",
+                "bpm",
+                "use_inferred_bpm",
+                "density",
+                "use_inferred_density",
+                "brightness",
+                "use_inferred_brightness",
+                "vocals_enabled",
+                "only_bass_and_drums",
+            }
+            patch_payload = {
+                key: value for key, value in args.items() if key in allowed_keys and value is not None
+            }
+            if not patch_payload:
+                tool_payload = {
+                    "text": "No music generation changes were provided.",
+                    "isError": True,
+                }
+            else:
+                await _send_json(
+                    connection,
+                    {
+                        "type": "music_generation_updated",
+                        "patch": patch_payload,
+                    },
+                )
+                tool_payload = {
+                    "text": "Updated the music generation controls.",
+                    "isError": False,
+                }
             tool_text = (tool_payload.get("text") or "").strip()
             log_level = logging.WARNING if tool_payload.get("isError") else logging.INFO
             log.log(log_level, "Tool %s completed: %s", name, tool_text or tool_payload)
@@ -380,6 +510,7 @@ async def _handle_live(connection: ServerConnection) -> None:
                     )
 
     async def pump_client(sess: Any) -> None:
+        nonlocal client_timezone
         async for raw_message in connection:
             if isinstance(raw_message, bytes):
                 raw_message = raw_message.decode("utf-8")
@@ -420,6 +551,10 @@ async def _handle_live(connection: ServerConnection) -> None:
                         turns=types.Content(role="user", parts=[types.Part(text=text)]),
                         turn_complete=True,
                     )
+            elif message_type == "client_context":
+                proposed_timezone = (data.get("timeZone") or "").strip()
+                if proposed_timezone:
+                    client_timezone = proposed_timezone
             elif message_type == "tool_result":
                 fid = data.get("id") or ""
                 future = pending_clipboard.get(fid)

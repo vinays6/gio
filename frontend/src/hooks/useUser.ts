@@ -53,5 +53,24 @@ export function useUser() {
     }
   }
 
-  return { user, loading, setPreferences }
+  const applyPreferencesUpdate = useCallback((preferences: string) => {
+    setUser(prev => prev ? { ...prev, preferences } : prev)
+  }, [])
+
+  const logout = useCallback(async () => {
+    try {
+      const res = await fetch('/api/logout', {
+        method: 'POST',
+        credentials: 'include',
+      })
+      if (!res.ok) return false
+      setUser(null)
+      return true
+    } catch (err) {
+      console.error('Failed to log out:', err)
+      return false
+    }
+  }, [])
+
+  return { user, loading, setPreferences, applyPreferencesUpdate, logout }
 }
