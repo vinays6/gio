@@ -794,13 +794,6 @@ function App() {
           </button>
           <button
             className="secondary-button"
-            disabled={status === 'connecting'}
-            onClick={() => void toggleVocals()}
-          >
-            Vocals: {vocalsEnabled ? 'On' : 'Off'}
-          </button>
-          <button
-            className="secondary-button"
             disabled={!isDocumentPiPSupported}
             onClick={() => void openDocumentPiP()}
           >
@@ -904,6 +897,17 @@ function App() {
             onChange={(event) => setBrightness(Number(event.target.value))}
           />
           <p className="value-readout">{brightness.toFixed(2)} brightness</p>
+
+          <label className="toggle-row" htmlFor="vocals-enabled">
+            <span className="field-label toggle-label">Vocals</span>
+            <input
+              id="vocals-enabled"
+              type="checkbox"
+              checked={vocalsEnabled}
+              disabled={status === 'connecting'}
+              onChange={() => void toggleVocals()}
+            />
+          </label>
 
           <label className="toggle-row" htmlFor="only-bass-and-drums">
             <span className="field-label toggle-label">Only bass and drums</span>
