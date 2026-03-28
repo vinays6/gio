@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   GoogleGenAI,
   MusicGenerationMode,
+  type LiveMusicGenerationConfig,
   type LiveMusicServerMessage,
   type LiveMusicSession,
 } from '@google/genai'
@@ -12,6 +13,14 @@ const SAMPLE_RATE = 48000
 const CHANNELS = 2
 const DEFAULT_PROMPT =
   'Minimal techno with deep bass, sparse percussion, and atmospheric synths'
+
+type StreamStatus =
+  | 'idle'
+  | 'connecting'
+  | 'streaming'
+  | 'paused'
+  | 'stopped'
+  | 'error'
 
 type DocumentPictureInPictureController = {
   window: Window | null
@@ -32,24 +41,66 @@ declare global {
 function App() {
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT)
   const [bpm, setBpm] = useState(90)
-  const [temperature, setTemperature] = useState(1)
-  const [status, setStatus] = useState<
-    'idle' | 'connecting' | 'streaming' | 'stopped' | 'error'
-  >('idle')
+  const [density, setDensity] = useState(0.6)
+  const [brightness, setBrightness] = useState(0.55)
+  const [vocalsEnabled, setVocalsEnabled] = useState(false)
+  const [onlyBassAndDrums, setOnlyBassAndDrums] = useState(false)
+  const [status, setStatus] = useState<StreamStatus>('idle')
   const [error, setError] = useState('')
   const [pipMessage, setPipMessage] = useState('')
 
   const sessionRef = useRef<LiveMusicSession | null>(null)
+  const lastAppliedConfigRef = useRef<LiveMusicGenerationConfig | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const nextPlaybackTimeRef = useRef(0)
   const isUnmountingRef = useRef(false)
   const pipWindowRef = useRef<Window | null>(null)
 
-  const isDocumentPiPSupported = typeof window !== 'undefined' && 'documentPictureInPicture' in window
+  const isDocumentPiPSupported =
+    typeof window !== 'undefined' && 'documentPictureInPicture' in window
 
   const closeDocumentPiP = () => {
     pipWindowRef.current?.close()
     pipWindowRef.current = null
+  }
+
+  const getEffectivePrompt = (basePrompt: string) =>
+    vocalsEnabled ? `${basePrompt}, Vocals` : basePrompt
+
+  const getConfigSummary = (): LiveMusicGenerationConfig => ({
+    bpm,
+    density,
+    brightness,
+    onlyBassAndDrums,
+    musicGenerationMode: vocalsEnabled
+      ? MusicGenerationMode.VOCALIZATION
+      : MusicGenerationMode.QUALITY,
+  })
+
+  const stopStream = async (nextStatus: Exclude<StreamStatus, 'connecting'> | null = 'idle') => {
+    const currentSession = sessionRef.current
+    sessionRef.current = null
+    lastAppliedConfigRef.current = null
+
+    if (currentSession?.close) {
+      await currentSession.close()
+    }
+
+    const audioContext = audioContextRef.current
+
+    nextPlaybackTimeRef.current = 0
+
+    if (audioContext && audioContext.state !== 'closed') {
+      await audioContext.close()
+    }
+
+    audioContextRef.current = null
+
+    closeDocumentPiP()
+
+    if (!isUnmountingRef.current && nextStatus) {
+      setStatus(nextStatus)
+    }
   }
 
   const updatePiPContents = () => {
@@ -60,69 +111,63 @@ function App() {
       return
     }
 
-    pipWindow.document.title = 'Lyria control room'
+    pipWindow.document.title = 'Lyria popup'
     pipWindow.document.body.innerHTML = ''
 
     const style = pipWindow.document.createElement('style')
     style.textContent = `
       :root {
         color-scheme: dark;
-        font-family: Inter, "Segoe UI", sans-serif;
+        font-family: "Segoe UI", sans-serif;
       }
 
       body {
         margin: 0;
         min-height: 100vh;
-        padding: 18px;
+        padding: 16px;
         box-sizing: border-box;
         background:
-          radial-gradient(circle at top left, rgba(249, 115, 22, 0.34), transparent 32%),
+          radial-gradient(circle at top, rgba(249, 115, 22, 0.24), transparent 36%),
           linear-gradient(180deg, #08131f 0%, #101d2f 100%);
         color: #f8fafc;
       }
 
       .pip-shell {
+        min-height: calc(100vh - 32px);
         display: grid;
-        gap: 14px;
-        min-height: calc(100vh - 36px);
+        gap: 16px;
+        align-content: start;
         border: 1px solid rgba(255, 255, 255, 0.12);
         border-radius: 24px;
         padding: 18px;
-        background: rgba(7, 12, 20, 0.78);
+        background: rgba(7, 12, 20, 0.82);
         backdrop-filter: blur(18px);
-      }
-
-      .pip-eyebrow,
-      .pip-meta {
-        margin: 0;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-      }
-
-      .pip-eyebrow {
-        color: #f7b267;
-        font-size: 0.72rem;
-        font-weight: 700;
       }
 
       .pip-title {
         margin: 0;
-        font-size: 1.8rem;
-        line-height: 0.95;
+        font-size: 1.5rem;
+        line-height: 1;
       }
 
       .pip-status {
         display: inline-flex;
-        justify-content: center;
         align-items: center;
-        min-height: 38px;
+        justify-content: center;
+        min-height: 36px;
         width: fit-content;
         border-radius: 999px;
-        padding: 0 14px;
-        background: rgba(34, 197, 94, 0.2);
-        color: #86efac;
+        padding: 0 12px;
+        font-size: 0.8rem;
         font-weight: 700;
         text-transform: capitalize;
+        background: rgba(148, 163, 184, 0.16);
+        color: #cbd5e1;
+      }
+
+      .pip-status.streaming {
+        background: rgba(34, 197, 94, 0.2);
+        color: #86efac;
       }
 
       .pip-status.connecting {
@@ -130,87 +175,61 @@ function App() {
         color: #fde68a;
       }
 
-      .pip-status.idle,
-      .pip-status.stopped {
-        background: rgba(148, 163, 184, 0.16);
-        color: #cbd5e1;
-      }
-
       .pip-status.error {
         background: rgba(248, 113, 113, 0.18);
         color: #fca5a5;
       }
 
-      .pip-grid {
-        display: grid;
-        gap: 10px;
-      }
-
-      .pip-meta {
-        color: rgba(226, 232, 240, 0.7);
-        font-size: 0.68rem;
-      }
-
-      .pip-prompt {
-        margin: 0;
-        color: rgba(226, 232, 240, 0.92);
-        line-height: 1.5;
-      }
-
       .pip-actions {
         display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 10px;
+        gap: 12px;
         margin-top: auto;
       }
 
       button {
         border: 0;
         border-radius: 16px;
-        padding: 12px 14px;
+        padding: 14px 16px;
         font: inherit;
         font-weight: 700;
         cursor: pointer;
       }
 
-      .pip-stop {
+      .pip-primary {
         background: linear-gradient(135deg, #f97316 0%, #fb7185 100%);
         color: #fff7ed;
       }
 
-      .pip-return {
+      .pip-secondary {
         background: rgba(255, 255, 255, 0.08);
         border: 1px solid rgba(255, 255, 255, 0.12);
         color: #e2e8f0;
       }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
     `
+
+    const isPlayable = status === 'paused' || status === 'stopped' || status === 'idle'
+    const playPauseLabel = status === 'streaming' ? 'Pause' : 'Play'
+    const vocalsLabel = vocalsEnabled ? 'Vocals on' : 'Vocals off'
 
     const shell = pipWindow.document.createElement('main')
     shell.className = 'pip-shell'
     shell.innerHTML = `
-      <p class="pip-eyebrow">Document Picture-in-Picture</p>
-      <h1 class="pip-title">Lyria control room</h1>
+      <h1 class="pip-title">Lyria controls</h1>
       <span class="pip-status ${status}">${status}</span>
-      <div class="pip-grid">
-        <p class="pip-meta">Prompt</p>
-        <p class="pip-prompt">${prompt.replaceAll('<', '&lt;').replaceAll('>', '&gt;')}</p>
-      </div>
-      <div class="pip-grid">
-        <p class="pip-meta">BPM</p>
-        <p class="pip-prompt">${bpm}</p>
-      </div>
-      <div class="pip-grid">
-        <p class="pip-meta">Temperature</p>
-        <p class="pip-prompt">${temperature.toFixed(1)}</p>
-      </div>
-      ${
-        error
-          ? `<div class="pip-grid"><p class="pip-meta">Error</p><p class="pip-prompt">${error.replaceAll('<', '&lt;').replaceAll('>', '&gt;')}</p></div>`
-          : ''
-      }
       <div class="pip-actions">
-        <button class="pip-stop" type="button">Stop stream</button>
-        <button class="pip-return" type="button">Return</button>
+        <button class="pip-primary" type="button" ${status === 'connecting' ? 'disabled' : ''}>
+          ${playPauseLabel}
+        </button>
+        <button class="pip-secondary" type="button" ${
+          status === 'connecting' ? 'disabled' : ''
+        }>
+          ${vocalsLabel}
+        </button>
       </div>
     `
 
@@ -218,13 +237,19 @@ function App() {
     pipWindow.document.head.appendChild(style)
     pipWindow.document.body.appendChild(shell)
 
-    shell.querySelector<HTMLButtonElement>('.pip-stop')?.addEventListener('click', () => {
-      void stopStream()
+    shell.querySelector<HTMLButtonElement>('.pip-primary')?.addEventListener('click', () => {
+      if (status === 'streaming') {
+        void pauseStream()
+        return
+      }
+
+      if (isPlayable) {
+        void playStream()
+      }
     })
 
-    shell.querySelector<HTMLButtonElement>('.pip-return')?.addEventListener('click', () => {
-      window.focus()
-      closeDocumentPiP()
+    shell.querySelector<HTMLButtonElement>('.pip-secondary')?.addEventListener('click', () => {
+      void toggleVocals()
     })
   }
 
@@ -241,8 +266,8 @@ function App() {
 
     try {
       const pipWindow = await window.documentPictureInPicture!.requestWindow({
-        width: 420,
-        height: 520,
+        width: 320,
+        height: 220,
         preferInitialWindowPlacement: true,
       })
 
@@ -267,13 +292,13 @@ function App() {
     return () => {
       isUnmountingRef.current = true
       closeDocumentPiP()
-      void stopStream()
+      void stopStream(null)
     }
   }, [])
 
   useEffect(() => {
     updatePiPContents()
-  }, [bpm, error, prompt, status, temperature])
+  }, [brightness, bpm, density, error, onlyBassAndDrums, status, vocalsEnabled])
 
   useEffect(() => {
     if (!isDocumentPiPSupported) {
@@ -321,9 +346,7 @@ function App() {
 
   const resetPlaybackQueue = () => {
     const audioContext = audioContextRef.current
-    nextPlaybackTimeRef.current = audioContext
-      ? audioContext.currentTime + 0.05
-      : 0
+    nextPlaybackTimeRef.current = audioContext ? audioContext.currentTime + 0.05 : 0
   }
 
   const getSampleRateFromMimeType = (mimeType?: string) => {
@@ -370,11 +393,7 @@ function App() {
       return
     }
 
-    const audioBuffer = audioContext.createBuffer(
-      CHANNELS,
-      frameCount,
-      chunkSampleRate,
-    )
+    const audioBuffer = audioContext.createBuffer(CHANNELS, frameCount, chunkSampleRate)
     const leftChannel = audioBuffer.getChannelData(0)
     const rightChannel = audioBuffer.getChannelData(1)
 
@@ -400,48 +419,27 @@ function App() {
     }
 
     await sessionRef.current.setWeightedPrompts({
-      weightedPrompts: [{ text: nextPrompt, weight: 1 }],
+      weightedPrompts: [{ text: getEffectivePrompt(nextPrompt), weight: 1 }],
     })
   }
 
-  const applyConfig = async (nextBpm: number, nextTemperature: number) => {
+  const applyConfig = async (nextConfig = getConfigSummary()) => {
     if (!sessionRef.current) {
       return
     }
-    console.log(`Setting new config... ${nextBpm}, ${nextTemperature}`)
 
     await sessionRef.current.setMusicGenerationConfig({
-      musicGenerationConfig: {
-        bpm: nextBpm,
-        temperature: nextTemperature,
-        musicGenerationMode: MusicGenerationMode.VOCALIZATION,
-      },
+      musicGenerationConfig: nextConfig,
     })
 
-    await sessionRef.current.resetContext();
-  }
+    const previousConfig = lastAppliedConfigRef.current
+    const shouldResetContext =
+      previousConfig !== null && previousConfig.bpm !== nextConfig.bpm
 
-  const stopStream = async (nextStatus: 'idle' | null = 'idle') => {
-    const currentSession = sessionRef.current
-    sessionRef.current = null
+    lastAppliedConfigRef.current = nextConfig
 
-    if (currentSession?.close) {
-      await currentSession.close()
-    }
-
-    resetPlaybackQueue()
-
-    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-      await audioContextRef.current.close()
-    }
-
-    audioContextRef.current = null
-
-    closeDocumentPiP()
-
-    setStatus('idle')
-    if (!isUnmountingRef.current && nextStatus) {
-      setStatus(nextStatus)
+    if (shouldResetContext) {
+      await sessionRef.current.resetContext()
     }
   }
 
@@ -481,11 +479,11 @@ function App() {
             }
           },
           onerror: (sessionError: unknown) => {
-            const message =
+            const nextError =
               sessionError instanceof Error
                 ? sessionError.message
                 : 'The music stream failed unexpectedly.'
-            setError(message)
+            setError(nextError)
             setStatus('error')
           },
           onclose: () => {
@@ -501,55 +499,131 @@ function App() {
       sessionRef.current = session
 
       await applyPrompt(prompt)
-      await applyConfig(bpm, temperature)
-      await session.play()
+      await applyConfig()
+      session.play()
 
       setStatus('streaming')
     } catch (streamError) {
-      const message =
+      const nextError =
         streamError instanceof Error
           ? streamError.message
           : 'Unable to connect to the Lyria realtime model.'
-      setError(message)
+      setError(nextError)
       setStatus('error')
       await stopStream(null)
     }
   }
 
-  const handlePromptSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-
-    if (!sessionRef.current) {
-      return
-    }
-
+  const playStream = async () => {
     try {
-      await applyPrompt(prompt)
-    } catch (promptError) {
-      const message =
-        promptError instanceof Error
-          ? promptError.message
-          : 'Unable to update the prompt.'
-      setError(message)
+      setError('')
+
+      if (!sessionRef.current) {
+        await startStream()
+        return
+      }
+
+      await ensureAudioContext()
+      sessionRef.current.play()
+      setStatus('streaming')
+    } catch (playError) {
+      const nextError =
+        playError instanceof Error ? playError.message : 'Unable to resume playback.'
+      setError(nextError)
       setStatus('error')
     }
   }
 
-  const handleConfigSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
+  const pauseStream = async () => {
+    if (!sessionRef.current) {
+      return
+    }
+
+    try {
+      sessionRef.current.pause()
+
+      if (audioContextRef.current?.state === 'running') {
+        await audioContextRef.current.suspend()
+      }
+
+      setStatus('paused')
+    } catch (pauseError) {
+      const nextError =
+        pauseError instanceof Error ? pauseError.message : 'Unable to pause playback.'
+      setError(nextError)
+      setStatus('error')
+    }
+  }
+
+  const toggleVocals = async () => {
+    const nextVocalsEnabled = !vocalsEnabled
+    setVocalsEnabled(nextVocalsEnabled)
 
     if (!sessionRef.current) {
       return
     }
 
     try {
-      await applyConfig(bpm, temperature)
+      await sessionRef.current.setWeightedPrompts({
+        weightedPrompts: [
+          {
+            text: nextVocalsEnabled ? `${prompt}, Vocals` : prompt,
+            weight: 1,
+          },
+        ],
+      })
+
+      const nextConfig: LiveMusicGenerationConfig = {
+        ...getConfigSummary(),
+        musicGenerationMode: nextVocalsEnabled
+          ? MusicGenerationMode.VOCALIZATION
+          : MusicGenerationMode.QUALITY,
+      }
+
+      await sessionRef.current.setMusicGenerationConfig({
+        musicGenerationConfig: nextConfig,
+      })
+
+      lastAppliedConfigRef.current = nextConfig
+    } catch (vocalsError) {
+      setVocalsEnabled(!nextVocalsEnabled)
+      const nextError =
+        vocalsError instanceof Error ? vocalsError.message : 'Unable to update vocals.'
+      setError(nextError)
+      setStatus('error')
+    }
+  }
+
+  const syncPrompt = async () => {
+    if (!sessionRef.current) {
+      return
+    }
+
+    try {
+      setError('')
+      await applyPrompt(prompt)
+    } catch (promptError) {
+      const nextError =
+        promptError instanceof Error ? promptError.message : 'Unable to update the prompt.'
+      setError(nextError)
+      setStatus('error')
+    }
+  }
+
+  const syncConfig = async () => {
+    if (!sessionRef.current) {
+      return
+    }
+
+    try {
+      setError('')
+      await applyConfig()
     } catch (configError) {
-      const message =
+      const nextError =
         configError instanceof Error
           ? configError.message
           : 'Unable to update the generation settings.'
-      setError(message)
+      setError(nextError)
       setStatus('error')
     }
   }
@@ -560,8 +634,8 @@ function App() {
         <p className="eyebrow">Realtime music streaming</p>
         <h1>Lyria control room</h1>
         <p className="hero-copy">
-          Connect this React app to Google&apos;s Lyria realtime model, stream PCM16
-          audio in the browser, and steer the track while it plays.
+          Play or pause the stream, toggle vocals, and tune the groove live while the
+          track keeps moving.
         </p>
 
         <div className="status-row">
@@ -573,21 +647,21 @@ function App() {
         <div className="cta-row">
           <button
             className="primary-button"
-            disabled={status === 'connecting' || status === 'streaming'}
-            onClick={() => void startStream()}
+            disabled={status === 'connecting'}
+            onClick={() => void (status === 'streaming' ? pauseStream() : playStream())}
           >
-            {status === 'connecting' ? 'Connecting...' : 'Start stream'}
+            {status === 'streaming' ? 'Pause' : 'Play'}
           </button>
           <button
             className="secondary-button"
-            disabled={!sessionRef.current}
-            onClick={() => void stopStream()}
+            disabled={status === 'connecting'}
+            onClick={() => void toggleVocals()}
           >
-            Stop stream
+            Vocals: {vocalsEnabled ? 'On' : 'Off'}
           </button>
           <button
             className="secondary-button"
-            disabled={!sessionRef.current || !isDocumentPiPSupported}
+            disabled={!isDocumentPiPSupported}
             onClick={() => void openDocumentPiP()}
           >
             Pop out player
@@ -605,11 +679,12 @@ function App() {
       </section>
 
       <section className="controls-grid">
-        <form className="control-card" onSubmit={handlePromptSubmit}>
+        <section className="control-card">
           <div className="card-heading">
             <p className="card-kicker">Prompt</p>
             <h2>Shape the track</h2>
           </div>
+
           <label className="field-label" htmlFor="prompt">
             Weighted prompt
           </label>
@@ -619,14 +694,18 @@ function App() {
             value={prompt}
             onChange={(event) => setPrompt(event.target.value)}
             placeholder="Describe the sound you want Lyria to generate."
-            rows={6}
+            rows={5}
           />
-          <button className="secondary-button full-width" type="submit" disabled={!sessionRef.current}>
-            Update prompt
+          <button
+            className="secondary-button full-width"
+            disabled={!sessionRef.current}
+            onClick={() => void syncPrompt()}
+          >
+            Apply prompt
           </button>
-        </form>
+        </section>
 
-        <form className="control-card" onSubmit={handleConfigSubmit}>
+        <section className="control-card">
           <div className="card-heading">
             <p className="card-kicker">Generation</p>
             <h2>Adjust the groove</h2>
@@ -640,31 +719,56 @@ function App() {
             className="range-input"
             type="range"
             min="60"
-            max="180"
+            max="200"
             value={bpm}
             onChange={(event) => setBpm(Number(event.target.value))}
           />
           <p className="value-readout">{bpm} BPM</p>
 
-          <label className="field-label" htmlFor="temperature">
-            Temperature
+          <label className="field-label" htmlFor="density">
+            Density
           </label>
           <input
-            id="temperature"
+            id="density"
             className="range-input"
             type="range"
-            min="0.1"
-            max="2"
-            step="0.1"
-            value={temperature}
-            onChange={(event) => setTemperature(Number(event.target.value))}
+            min="0"
+            max="1"
+            step="0.01"
+            value={density}
+            onChange={(event) => setDensity(Number(event.target.value))}
           />
-          <p className="value-readout">{temperature.toFixed(1)} intensity</p>
+          <p className="value-readout">{density.toFixed(2)} density</p>
 
-          <button className="secondary-button full-width" disabled={!sessionRef.current}>
-            Update settings
+          <label className="field-label" htmlFor="brightness">
+            Brightness
+          </label>
+          <input
+            id="brightness"
+            className="range-input"
+            type="range"
+            min="0"
+            max="1"
+            step="0.01"
+            value={brightness}
+            onChange={(event) => setBrightness(Number(event.target.value))}
+          />
+          <p className="value-readout">{brightness.toFixed(2)} brightness</p>
+
+          <label className="toggle-row" htmlFor="only-bass-and-drums">
+            <span className="field-label toggle-label">Only bass and drums</span>
+            <input
+              id="only-bass-and-drums"
+              type="checkbox"
+              checked={onlyBassAndDrums}
+              onChange={(event) => setOnlyBassAndDrums(event.target.checked)}
+            />
+          </label>
+
+          <button className="secondary-button full-width" disabled={!sessionRef.current} onClick={() => void syncConfig()}>
+            Apply settings
           </button>
-        </form>
+        </section>
       </section>
     </main>
   )

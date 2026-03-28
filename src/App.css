@@ -92,7 +92,8 @@
 }
 
 .status-idle,
-.status-stopped {
+.status-stopped,
+.status-paused {
   background: rgba(148, 163, 184, 0.16);
   color: #cbd5e1;
 }
@@ -203,6 +204,29 @@
   color: rgba(226, 232, 240, 0.72);
   font-size: 0.74rem;
   font-weight: 700;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 8px 0 22px;
+  padding: 16px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 18px;
+  background: rgba(15, 23, 42, 0.46);
+}
+
+.toggle-label {
+  margin-bottom: 0;
+}
+
+.toggle-row input[type='checkbox'] {
+  width: 22px;
+  height: 22px;
+  accent-color: #fb7185;
+  cursor: pointer;
 }
 
 .text-input,
