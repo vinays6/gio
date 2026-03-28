@@ -199,6 +199,13 @@ export function useGioSession({
                   setClipboardContent(content)
                   pendingClipboardWriteRef.current = content
                   console.log('[Gio] saveToClipboard called, length:', content.length)
+                  // Attempt immediate write — succeeds if the user gesture window is still open
+                  navigator.clipboard.writeText(content).then(() => {
+                    pendingClipboardWriteRef.current = null
+                    console.log('[Gio] Clipboard written immediately')
+                  }).catch(() => {
+                    // Falls back to deferred write on next user gesture (endGioSession / copy button)
+                  })
                 }
                 try {
                   gioSessionRef.current?.sendToolResponse({
