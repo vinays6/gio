@@ -127,14 +127,18 @@ export function useGioSession({
         const existing = userPreferences ? userPreferences.trim() : ''
 
         const mergeAndSave = async () => {
+          console.log('[Gio] Preference change detected — new:', newPref, '| existing:', existing || '(none)')
           let merged: string
           if (!existing) {
             merged = newPref
+            console.log('[Gio] No existing preferences — saving directly:', merged)
           } else {
             const apiKey = getApiKey()
             if (!apiKey) {
               merged = `${existing}\n${newPref}`
+              console.log('[Gio] No API key — appending without merge:', merged)
             } else {
+              console.log('[Gio] Merging via gemini-3.1-pro-preview…')
               const client = new GoogleGenAI({ apiKey })
               const response = await client.models.generateContent({
                 model: 'gemini-3.1-pro-preview',
@@ -144,10 +148,13 @@ export function useGioSession({
                 }],
               })
               merged = response.text?.trim() ?? `${existing}\n${newPref}`
+              console.log('[Gio] Merged preferences result:', merged)
             }
           }
+          console.log('[Gio] Saving preferences to DB:', merged)
           const ok = await setPreferences(merged)
           if (!ok) throw new Error('save returned false')
+          console.log('[Gio] Preferences saved successfully')
         }
 
         mergeAndSave().catch((err) => {
