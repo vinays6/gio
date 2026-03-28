@@ -973,13 +973,8 @@ function App() {
           track keeps moving.
         </p>
 
-        <div className="status-row">
-          <span className={`status-pill status-${status}`}>{status}</span>
-          <span className="status-meta">Model: {MODEL}</span>
-          <span className="status-meta">Format: PCM16 / {SAMPLE_RATE} Hz</span>
-        </div>
-
         <div className="cta-row">
+          <span className={`status-pill status-${status}`}>{status}</span>
           <button
             className="primary-button"
             disabled={status === 'connecting'}
