@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import type { StreamStatus } from '../constants'
 import { MarqueeText } from './MarqueeText'
 import { AudioVisualizer } from './AudioVisualizer'
@@ -119,6 +119,12 @@ export function LandingPage({
   const [debugOpen, setDebugOpen] = useState(false)
   const [prefsInput, setPrefsInput] = useState('')
   const [prefsSaved, setPrefsSaved] = useState(false)
+
+  // Keep textarea in sync when preferences are updated externally (e.g. by Gio voice)
+  useEffect(() => {
+    setPrefsInput(user?.preferences ?? '')
+    setPrefsSaved(false)
+  }, [user?.preferences])
   const isConnected = status === 'streaming' || status === 'paused'
   const isPlaying = status === 'streaming'
 
@@ -428,7 +434,7 @@ export function LandingPage({
                     </p>
                     <textarea
                       rows={2}
-                      value={prefsInput || user.preferences || ''}
+                      value={prefsInput}
                       onChange={e => { setPrefsInput(e.target.value); setPrefsSaved(false) }}
                       style={{
                         width: '100%', boxSizing: 'border-box', background: 'var(--surface-hover)',
@@ -439,7 +445,7 @@ export function LandingPage({
                     />
                     <button
                       onClick={async () => {
-                        const ok = await setPreferences(prefsInput || user.preferences || '')
+                        const ok = await setPreferences(prefsInput)
                         if (ok) setPrefsSaved(true)
                       }}
                       style={{

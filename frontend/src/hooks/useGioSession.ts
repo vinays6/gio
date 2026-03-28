@@ -137,7 +137,7 @@ export function useGioSession({
             } else {
               const client = new GoogleGenAI({ apiKey })
               const response = await client.models.generateContent({
-                model: 'gemini-2.0-flash',
+                model: 'gemini-3.1-pro-preview',
                 contents: [{
                   role: 'user',
                   parts: [{ text: `You manage music preferences for a user of an ambient music app. Here are their existing preferences:\n${existing}\n\nThe user just set this new preference (treat it as high priority and let it override any conflicting older preferences):\n${newPref}\n\nMerge these into a clean, concise set of music preferences. Output only the merged result as plain text, one preference per line, no extra commentary.` }],
