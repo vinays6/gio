@@ -245,6 +245,25 @@
   width: 100%;
 }
 
+.capture-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+
+.capture-toggle {
+  flex-shrink: 0;
+}
+
+.capture-status {
+  margin: 0;
+  color: rgba(226, 232, 240, 0.68);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+}
+
 @media (max-width: 860px) {
   .app-shell {
     padding: 24px 16px 28px;
