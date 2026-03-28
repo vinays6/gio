@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import {
   GoogleGenAI,
   MusicGenerationMode,
@@ -9,6 +9,7 @@ import {
 import './App.css'
 
 const MODEL = 'models/lyria-realtime-exp'
+const VEO_MODEL = 'veo-2.0-generate-001'
 const SAMPLE_RATE = 48000
 const CHANNELS = 2
 const DEFAULT_BPM = 90
@@ -16,6 +17,8 @@ const DEFAULT_DENSITY = 0.6
 const DEFAULT_BRIGHTNESS = 0.55
 const DEFAULT_PROMPT =
   'Minimal techno with deep bass, sparse percussion, and atmospheric synths'
+const VIDEO_POLL_INTERVAL_MS = 10000
+const VIDEO_DURATION_SECONDS = 8
 
 const ANALYSIS_SYSTEM_PROMPT = `You are a music director for a focus and productivity app. Your job is to decide whether the background music should change based on what the user is currently doing on their screen.
 
@@ -41,6 +44,29 @@ type StreamStatus =
   | 'stopped'
   | 'error'
 
+type VideoGenerationStatus = 'idle' | 'generating' | 'ready' | 'fallback' | 'error'
+
+type MoodPalette = {
+  label: string
+  accent1: string
+  accent2: string
+  accent3: string
+  glow: string
+}
+
+type VisualCircle = {
+  id: string
+  size: number
+  top: number
+  left: number
+  color: string
+  duration: number
+  delay: number
+  driftX: number
+  driftY: number
+  scale: number
+}
+
 type DocumentPictureInPictureController = {
   window: Window | null
   requestWindow: (options?: {
@@ -56,6 +82,105 @@ declare global {
     documentPictureInPicture?: DocumentPictureInPictureController
   }
 }
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+const escapeHtml = (value: string) =>
+  value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+
+const getMoodPalette = (musicPrompt: string): MoodPalette => {
+  const prompt = musicPrompt.toLowerCase()
+
+  if (prompt.includes('techno') || prompt.includes('electro') || prompt.includes('club')) {
+    return {
+      label: 'Neon pulse',
+      accent1: '#ff4d9d',
+      accent2: '#00e5ff',
+      accent3: '#f9f871',
+      glow: 'rgba(255, 77, 157, 0.35)',
+    }
+  }
+
+  if (prompt.includes('ambient') || prompt.includes('atmospheric') || prompt.includes('dream')) {
+    return {
+      label: 'Aurora bloom',
+      accent1: '#67e8f9',
+      accent2: '#a78bfa',
+      accent3: '#34d399',
+      glow: 'rgba(103, 232, 249, 0.3)',
+    }
+  }
+
+  if (prompt.includes('lofi') || prompt.includes('lo-fi') || prompt.includes('study')) {
+    return {
+      label: 'Sunset drift',
+      accent1: '#fb7185',
+      accent2: '#fdba74',
+      accent3: '#facc15',
+      glow: 'rgba(251, 113, 133, 0.3)',
+    }
+  }
+
+  return {
+    label: 'Ember motion',
+    accent1: '#fb7185',
+    accent2: '#f97316',
+    accent3: '#c084fc',
+    glow: 'rgba(249, 115, 22, 0.3)',
+  }
+}
+
+const getSeedFromPrompt = (prompt: string) => {
+  let seed = 0
+  for (let index = 0; index < prompt.length; index += 1) {
+    seed = (seed * 31 + prompt.charCodeAt(index)) >>> 0
+  }
+  return seed || 1
+}
+
+const createSeededRandom = (seed: number) => {
+  let current = seed
+  return () => {
+    current = (current * 1664525 + 1013904223) >>> 0
+    return current / 4294967296
+  }
+}
+
+const buildVisualCircles = (
+  musicPrompt: string,
+  palette: MoodPalette,
+  sceneIndex: number,
+): VisualCircle[] => {
+  const random = createSeededRandom(getSeedFromPrompt(`${musicPrompt}:${sceneIndex}`))
+  const colors = [palette.accent1, palette.accent2, palette.accent3, '#ffffff']
+
+  return Array.from({ length: 14 }, (_, index) => {
+    const size = 28 + Math.round(random() * 150)
+    return {
+      id: `${musicPrompt}-${sceneIndex}-${index}`,
+      size,
+      top: Math.round(random() * 78),
+      left: Math.round(random() * 78),
+      color: colors[index % colors.length],
+      duration: 3.8 + random() * 1.6,
+      delay: random() * 1.1,
+      driftX: Math.round((random() - 0.5) * 68),
+      driftY: Math.round((random() - 0.5) * 68),
+      scale: 0.75 + random() * 0.7,
+    }
+  })
+}
+
+const buildVisualCircle = (
+  musicPrompt: string,
+  palette: MoodPalette,
+  circleToken: number,
+  index: number,
+): VisualCircle => buildVisualCircles(musicPrompt, palette, circleToken).at(index % 14)!
 
 function App() {
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT)
@@ -81,6 +206,11 @@ function App() {
   const [lastDetectedActivity, setLastDetectedActivity] = useState<string | null>(null)
   const [lastGeminiDecision, setLastGeminiDecision] = useState<string | null>(null)
   const [lastAnalysisTime, setLastAnalysisTime] = useState<string | null>(null)
+  const [videoEnabled, setVideoEnabled] = useState(false)
+  const [videoStatus, setVideoStatus] = useState<VideoGenerationStatus>('idle')
+  const [videoUrl, setVideoUrl] = useState<string | null>(null)
+  const [videoMessage, setVideoMessage] = useState('Video visuals are off.')
+  const [videoPromptUsed, setVideoPromptUsed] = useState<string | null>(null)
 
   const sessionRef = useRef<LiveMusicSession | null>(null)
   const lastAppliedConfigRef = useRef<LiveMusicGenerationConfig | null>(null)
@@ -102,11 +232,32 @@ function App() {
 
   const isDocumentPiPSupported =
     typeof window !== 'undefined' && 'documentPictureInPicture' in window
+  const videoRequestIdRef = useRef(0)
+  const visualCircleTokenRef = useRef(0)
+  const visualCircleTimersRef = useRef<number[]>([])
+  const visualMusicPromptRef = useRef(currentMusicPrompt)
+  const visualPaletteRef = useRef(getMoodPalette(currentMusicPrompt))
+  const moodPalette = getMoodPalette(currentMusicPrompt)
+  const [visualCircles, setVisualCircles] = useState<VisualCircle[]>(() =>
+    buildVisualCircles('ambient', getMoodPalette('ambient'), 0),
+  )
+  const pipVisualCircles = visualCircles.slice(0, 8)
+  const visualStyle = {
+    '--visual-accent-1': moodPalette.accent1,
+    '--visual-accent-2': moodPalette.accent2,
+    '--visual-accent-3': moodPalette.accent3,
+    '--visual-glow': moodPalette.glow,
+  } as CSSProperties
 
   const closeDocumentPiP = () => {
     pipWindowRef.current?.close()
     pipWindowRef.current = null
   }
+
+  useEffect(() => {
+    visualMusicPromptRef.current = currentMusicPrompt
+    visualPaletteRef.current = getMoodPalette(currentMusicPrompt)
+  }, [currentMusicPrompt])
 
   const getEffectivePrompt = (basePrompt: string) =>
     vocalsEnabled ? `${basePrompt}, Vocals` : basePrompt
@@ -135,6 +286,27 @@ function App() {
   }
 
   const getApiKey = () => import.meta.env.VITE_GEMINI_API_KEY?.trim() ?? ''
+
+  const getVideoStatusLabel = () => {
+    if (!videoEnabled) return 'Off'
+    if (videoStatus === 'generating') return 'On - generating'
+    if (videoStatus === 'ready') return 'On - Veo ready'
+    if (videoStatus === 'fallback') return 'On - live visuals'
+    if (videoStatus === 'error') return 'On - issue'
+    return 'On'
+  }
+
+  const buildVideoPrompt = () =>
+    [
+      'Abstract music visualizer on a pure black background.',
+      'Clear solid circles of many sizes moving like a music video visualizer.',
+      'No blur, no gray rings, no haze, no fog.',
+      'Bright clean circular pulses that populate and depopulate across the frame.',
+      'Vivid neon color, crisp edges, smooth looping motion.',
+      `Primary colors are ${moodPalette.accent1}, ${moodPalette.accent2}, and ${moodPalette.accent3}.`,
+      `Music mood: ${currentMusicPrompt}.`,
+      'No people, no text, no logos, no scenery.',
+    ].join(' ')
 
   const applyPrompt = async (nextPrompt: string) => {
     if (!sessionRef.current) {
@@ -283,6 +455,139 @@ function App() {
     }
   }
 
+  const toggleVideoEnabled = () => {
+    setVideoEnabled(previousValue => {
+      const nextValue = !previousValue
+      if (!nextValue) {
+        setVideoMessage('Video visuals are off.')
+      } else if (videoStatus === 'ready') {
+        setVideoMessage('Showing the latest Veo visual.')
+      } else if (videoStatus === 'generating') {
+        setVideoMessage('Generating a Veo visual...')
+      } else {
+        setVideoMessage('Showing live color visuals.')
+      }
+      return nextValue
+    })
+  }
+
+  const handleVisualPlaybackError = () => {
+    setVideoUrl(null)
+    setVideoStatus('fallback')
+    if (videoEnabled) {
+      setVideoMessage('Veo video could not play here, so live visuals are showing instead.')
+    }
+  }
+
+  useEffect(() => {
+    visualCircleTimersRef.current.forEach(timeoutId => window.clearTimeout(timeoutId))
+    visualCircleTimersRef.current = []
+    visualCircleTokenRef.current = 0
+
+    const initialCircles = buildVisualCircles(
+      visualMusicPromptRef.current,
+      visualPaletteRef.current,
+      0,
+    )
+    setVisualCircles(initialCircles)
+
+    const scheduleCircleRespawn = (index: number, circle: VisualCircle) => {
+      const timeoutId = window.setTimeout(() => {
+        visualCircleTokenRef.current += 1
+        const nextCircle = buildVisualCircle(
+          visualMusicPromptRef.current,
+          visualPaletteRef.current,
+          visualCircleTokenRef.current,
+          index,
+        )
+
+        setVisualCircles(previousCircles =>
+          previousCircles.map((currentCircle, currentIndex) =>
+            currentIndex === index ? nextCircle : currentCircle,
+          ),
+        )
+
+        scheduleCircleRespawn(index, nextCircle)
+      }, (circle.delay + circle.duration) * 1000)
+
+      visualCircleTimersRef.current.push(timeoutId)
+    }
+
+    initialCircles.forEach((circle, index) => {
+      scheduleCircleRespawn(index, circle)
+    })
+
+    return () => {
+      visualCircleTimersRef.current.forEach(timeoutId => window.clearTimeout(timeoutId))
+      visualCircleTimersRef.current = []
+    }
+  }, [])
+
+  const generateVideo = async () => {
+    const apiKey = getApiKey()
+
+    if (!apiKey) {
+      setError('Add VITE_GEMINI_API_KEY to your environment before generating a Veo video.')
+      setVideoStatus('error')
+      return
+    }
+
+    const requestId = videoRequestIdRef.current + 1
+    videoRequestIdRef.current = requestId
+    const nextVideoPrompt = buildVideoPrompt()
+
+    setError('')
+    setVideoEnabled(true)
+    setVideoStatus('generating')
+    setVideoMessage('Generating a colorful Veo visual on black background...')
+    setVideoPromptUsed(nextVideoPrompt)
+
+    try {
+      const client = new GoogleGenAI({ apiKey })
+      let operation = await client.models.generateVideos({
+      model: VEO_MODEL,
+      source: { prompt: nextVideoPrompt },
+      config: {
+        numberOfVideos: 1,
+        aspectRatio: '16:9',
+        durationSeconds: VIDEO_DURATION_SECONDS,
+        negativePrompt:
+          'people faces text subtitles logos watermark scenery bright background white background',
+      },
+    })
+
+      while (!operation.done) {
+        await sleep(VIDEO_POLL_INTERVAL_MS)
+        if (videoRequestIdRef.current !== requestId || isUnmountingRef.current) {
+          return
+        }
+        operation = await client.operations.getVideosOperation({ operation })
+      }
+
+      if (videoRequestIdRef.current !== requestId || isUnmountingRef.current) {
+        return
+      }
+
+      const nextVideoUrl = operation.response?.generatedVideos?.[0]?.video?.uri?.trim() ?? ''
+
+      if (!nextVideoUrl) {
+        setVideoUrl(null)
+        setVideoStatus('fallback')
+        setVideoMessage('Veo did not return a browser-playable URL, so live visuals are showing.')
+        return
+      }
+
+      setVideoUrl(nextVideoUrl)
+      setVideoStatus('ready')
+      setVideoMessage('Showing the latest Veo visual.')
+    } catch (videoError) {
+      console.error('[Video]', videoError)
+      setVideoUrl(null)
+      setVideoStatus('fallback')
+      setVideoMessage('Veo was unavailable, so live visuals are showing instead.')
+    }
+  }
+
   const stopStream = async (nextStatus: Exclude<StreamStatus, 'connecting'> | null = 'idle') => {
     const currentSession = sessionRef.current
     sessionRef.current = null
@@ -381,6 +686,78 @@ function App() {
       .pip-status.streaming { background: rgba(34, 197, 94, 0.2); color: #86efac; }
       .pip-status.connecting { background: rgba(251, 191, 36, 0.18); color: #fde68a; }
       .pip-status.error { background: rgba(248, 113, 113, 0.18); color: #fca5a5; }
+
+      .pip-visual-stage {
+        position: relative;
+        min-height: 150px;
+        overflow: hidden;
+        border-radius: 16px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: #000;
+      }
+
+      .pip-visual-video {
+        width: 100%;
+        height: 100%;
+        min-height: 150px;
+        object-fit: cover;
+        display: block;
+      }
+
+      .pip-fallback {
+        position: absolute;
+        inset: 0;
+        background:
+          radial-gradient(circle at center, rgba(255, 255, 255, 0.03), transparent 48%),
+          #000;
+        transition: background 0.9s ease, opacity 0.3s ease;
+      }
+
+      .pip-fallback.hidden { opacity: 0; }
+
+      .pip-shape {
+        position: absolute;
+        border-radius: 999px;
+        filter: none;
+        opacity: 0;
+        mix-blend-mode: screen;
+        animation: pip-orbit var(--pip-duration) ease-in-out infinite;
+        animation-delay: var(--pip-delay);
+        transition: background-color 0.9s ease;
+      }
+
+      .pip-visual-overlay {
+        position: absolute;
+        inset: auto 10px 10px 10px;
+        padding: 8px 10px;
+        border-radius: 12px;
+        background: rgba(0, 0, 0, 0.5);
+      }
+
+      .pip-visual-label {
+        margin: 0 0 3px;
+        font-size: 0.58rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(248, 250, 252, 0.72);
+      }
+
+      .pip-visual-value {
+        margin: 0;
+        font-size: 0.74rem;
+        color: #f8fafc;
+      }
+
+      @keyframes pip-orbit {
+        0%, 100% { transform: translate3d(0, 0, 0) scale(0.35); opacity: 0; }
+        16% { opacity: 0.52; }
+        34% { opacity: 0.96; }
+        60% { transform: translate3d(var(--pip-dx), var(--pip-dy), 0) scale(var(--pip-scale)); opacity: 1; }
+        82% { opacity: 0.24; }
+        92% { opacity: 0.06; }
+      }
+
 
       .pip-now-playing {
         padding: 8px 10px;
@@ -534,6 +911,10 @@ function App() {
     }
 
     const debugOpen = showDebugRef.current
+    const safeVideoUrl = videoUrl ? escapeHtml(videoUrl) : ''
+    const visualHtml = videoEnabled && videoUrl
+      ? `<video class="pip-visual-video" src="${safeVideoUrl}" autoplay loop muted playsinline></video>`
+      : ''
     const shell = pipWindow.document.createElement('main')
     shell.className = 'pip-shell'
     shell.innerHTML = `
@@ -541,12 +922,48 @@ function App() {
         <h1 class="pip-title">Gio controls</h1>
         <span class="pip-status ${status}">${status}</span>
       </div>
+      <div class="pip-visual-stage" style="--pip-accent-1:${moodPalette.accent1};--pip-accent-2:${moodPalette.accent2};--pip-accent-3:${moodPalette.accent3};">
+        ${visualHtml}
+        <div class="pip-fallback${!videoEnabled || !videoUrl || videoStatus !== 'ready' ? '' : ' hidden'}">
+          ${pipVisualCircles
+            .map(circle => `
+              <div
+                class="pip-shape"
+                style="
+                  width:${circle.size * 0.55}px;
+                  height:${circle.size * 0.55}px;
+                  top:${circle.top}%;
+                  left:${circle.left}%;
+                  background:${circle.color};
+                  --pip-dx:${circle.driftX * 0.55}px;
+                  --pip-dy:${circle.driftY * 0.55}px;
+                  --pip-scale:${circle.scale.toFixed(2)};
+                  --pip-duration:${circle.duration.toFixed(2)}s;
+                  --pip-delay:${circle.delay.toFixed(2)}s;
+                "
+              ></div>
+            `)
+            .join('')}
+        </div>
+        <div class="pip-visual-overlay">
+          <p class="pip-visual-label">Visual mood</p>
+          <p class="pip-visual-value">${escapeHtml(moodPalette.label)}</p>
+        </div>
+      </div>
       <div class="pip-now-playing">
         <p class="pip-now-playing-label">Now playing</p>
-        <p class="pip-now-playing-value">${currentMusicPrompt.replaceAll('<', '&lt;').replaceAll('>', '&gt;')}</p>
+        <p class="pip-now-playing-value">${escapeHtml(currentMusicPrompt)}</p>
       </div>
       <button class="pip-debug-toggle" type="button">Debug ${debugOpen ? '▲' : '▼'}</button>
       <div class="pip-debug-drawer${debugOpen ? ' open' : ''}">
+        <div class="pip-debug-row">
+          <p class="pip-debug-label">Video</p>
+          <p class="pip-debug-value">${escapeHtml(getVideoStatusLabel())}</p>
+        </div>
+        <div class="pip-debug-row">
+          <p class="pip-debug-label">Color mood</p>
+          <p class="pip-debug-value">${escapeHtml(moodPalette.label)}</p>
+        </div>
         <div class="pip-debug-row">
           <p class="pip-debug-label">Last screen capture</p>
           ${thumbnailHtml}
@@ -646,8 +1063,56 @@ function App() {
     updatePiPContents()
   }, [
     brightness, bpm, density, error, onlyBassAndDrums, status, vocalsEnabled,
-    currentMusicPrompt, latestScreenshot, lastDetectedActivity, lastGeminiDecision, lastAnalysisTime,
+    currentMusicPrompt,
+    videoEnabled, videoStatus, videoUrl, videoMessage,
   ])
+
+  useEffect(() => {
+    const pipWindow = pipWindowRef.current
+
+    if (!pipWindow || pipWindow.closed) {
+      return
+    }
+
+    const shell = pipWindow.document.body.querySelector('.pip-shell')
+    if (!shell) {
+      return
+    }
+
+    const thumbnailHtml = latestScreenshot
+      ? `<img class="pip-debug-thumbnail" src="${latestScreenshot}" alt="Last capture" />`
+      : `<p class="pip-debug-value">No capture yet</p>`
+
+    const activityHtml = lastDetectedActivity
+      ? `<p class="pip-debug-value">${lastDetectedActivity.replaceAll('<', '&lt;').replaceAll('>', '&gt;')}</p>`
+      : `<p class="pip-debug-value">Waiting for first analysis...</p>`
+
+    let decisionHtml = `<p class="pip-debug-value">Waiting...</p>`
+    if (lastGeminiDecision === 'FALSE') {
+      decisionHtml = `<p class="pip-debug-value pip-debug-value-false">No change (FALSE)</p>`
+    } else if (lastGeminiDecision) {
+      decisionHtml = `<p class="pip-debug-value pip-debug-value-change">Changed to: ${lastGeminiDecision.replaceAll('<', '&lt;').replaceAll('>', '&gt;')}</p>`
+    }
+
+    const debugRows = shell.querySelectorAll('.pip-debug-row')
+    const updateDebugRow = (index: number, html: string) => {
+      const row = debugRows[index] as HTMLElement | undefined
+      const label = row?.querySelector('.pip-debug-label')?.outerHTML
+      if (!row || !label) {
+        return
+      }
+      row.innerHTML = `${label}${html}`
+    }
+
+    updateDebugRow(2, thumbnailHtml)
+    updateDebugRow(3, activityHtml)
+    updateDebugRow(4, decisionHtml)
+
+    const analysisNode = debugRows[5]?.querySelector('.pip-debug-value')
+    if (analysisNode) {
+      analysisNode.textContent = lastAnalysisTime ?? 'Not yet'
+    }
+  }, [latestScreenshot, lastDetectedActivity, lastGeminiDecision, lastAnalysisTime])
 
   useEffect(() => {
     if (!isDocumentPiPSupported) {
@@ -1001,6 +1466,83 @@ function App() {
         {error ? <p className="error-banner">{error}</p> : null}
       </section>
 
+      <section className="visual-panel" style={visualStyle}>
+        <div className="visual-panel-copy">
+          <p className="card-kicker">Visuals</p>
+          <h2>Music video layer</h2>
+          <p className="visual-panel-text">
+            Generate a Veo clip for the current music, or keep the built-in colorful
+            shape animation on.
+          </p>
+          <div className="visual-chip-row">
+            <span className="visual-chip">Video {videoEnabled ? 'On' : 'Off'}</span>
+            <span className="visual-chip">Color mood {moodPalette.label}</span>
+          </div>
+          <div className="visual-actions">
+            <button
+              className="primary-button"
+              disabled={videoStatus === 'generating'}
+              onClick={() => void generateVideo()}
+            >
+              {videoStatus === 'generating' ? 'Generating video...' : 'Generate video'}
+            </button>
+            <button className="secondary-button" onClick={toggleVideoEnabled}>
+              {videoEnabled ? 'Video off' : 'Video on'}
+            </button>
+          </div>
+          <p className="visual-status-copy">{videoMessage}</p>
+          {videoPromptUsed ? (
+            <p className="visual-meta">
+              Last prompt: <span>{videoPromptUsed}</span>
+            </p>
+          ) : null}
+        </div>
+
+        <div className={`visual-stage-shell ${videoEnabled ? 'is-on' : 'is-off'}`} style={visualStyle}>
+          {videoEnabled && videoUrl ? (
+            <video
+              key={videoUrl}
+              className="visual-stage-video"
+              src={videoUrl}
+              autoPlay
+              loop
+              muted
+              playsInline
+              onError={handleVisualPlaybackError}
+            />
+          ) : null}
+          <div
+            className={`visual-fallback-layer ${
+              !videoEnabled || !videoUrl || videoStatus !== 'ready' ? 'visible' : ''
+            }`}
+          >
+            {visualCircles.map(circle => (
+              <div
+                key={circle.id}
+                className="visual-shape"
+                style={{
+                  width: `${circle.size}px`,
+                  height: `${circle.size}px`,
+                  top: `${circle.top}%`,
+                  left: `${circle.left}%`,
+                  background: circle.color,
+                  ['--circle-dx' as string]: `${circle.driftX}px`,
+                  ['--circle-dy' as string]: `${circle.driftY}px`,
+                  ['--circle-scale' as string]: circle.scale.toFixed(2),
+                  ['--circle-duration' as string]: `${circle.duration.toFixed(2)}s`,
+                  ['--circle-delay' as string]: `${circle.delay.toFixed(2)}s`,
+                }}
+              />
+            ))}
+          </div>
+          <div className="visual-stage-overlay">
+            <p className="visual-stage-label">Current mood</p>
+            <p className="visual-stage-value">{moodPalette.label}</p>
+            <p className="visual-stage-subvalue">{currentMusicPrompt}</p>
+          </div>
+        </div>
+      </section>
+
       <section className="controls-grid">
         <div className="controls-column">
           <section className="control-card control-card-half">
@@ -1196,6 +1738,13 @@ function App() {
             <p className="powered-by-desc">Realtime adaptive music generation</p>
             <div className="powered-by-badges">
               <span className="powered-by-badge badge-ai">Music Generation</span>
+            </div>
+          </div>
+          <div className="powered-by-card">
+            <p className="powered-by-model">veo-2.0-generate-001</p>
+            <p className="powered-by-desc">Color video generation for the visual layer</p>
+            <div className="powered-by-badges">
+              <span className="powered-by-badge badge-ai">Video Generation</span>
             </div>
           </div>
           <div className="powered-by-card">
