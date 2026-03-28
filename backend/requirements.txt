@@ -4,3 +4,4 @@ flask-sqlalchemy
 oauthlib
 authlib
 requests
+dotenv
