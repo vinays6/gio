@@ -71,17 +71,17 @@ export function useDocumentPiP(state: PiPState, actions: PiPActions) {
         min-height: 100vh;
       }
       .pip-header {
-        display: flex; flex-direction: column;
+        position: relative;
         background: linear-gradient(90deg, #34A853, #FBBC05, #EA4335);
         flex-shrink: 0;
       }
       .pip-viz-canvas {
-        display: block; width: 100%; height: 44px;
-      }
-      .pip-header-logo-row {
-        height: 36px; display: flex; align-items: center; justify-content: center;
+        display: block; width: 100%; height: 64px;
       }
       .pip-glass-logo {
+        position: absolute;
+        top: 50%; left: 50%;
+        transform: translate(-50%, -50%);
         font-size: 15px; font-weight: 800; letter-spacing: 0.22em;
         color: #fff;
         padding: 3px 16px 3px 20px;
@@ -93,6 +93,7 @@ export function useDocumentPiP(state: PiPState, actions: PiPActions) {
           0 -1px 0 rgba(0,0,0,0.08) inset,
           0 3px 12px rgba(0,0,0,0.18);
         text-shadow: 0 1px 3px rgba(0,0,0,0.3);
+        pointer-events: none;
       }
       .pip-section {
         padding: 12px;
@@ -229,10 +230,8 @@ export function useDocumentPiP(state: PiPState, actions: PiPActions) {
 
     shell.innerHTML = `
       <div class="pip-header">
-        <canvas id="pip-viz" class="pip-viz-canvas" width="300" height="44"></canvas>
-        <div class="pip-header-logo-row">
-          <span class="pip-glass-logo">GIO</span>
-        </div>
+        <canvas id="pip-viz" class="pip-viz-canvas" width="300" height="64"></canvas>
+        <span class="pip-glass-logo">GIO</span>
       </div>
 
       <div class="pip-section">
@@ -315,6 +314,7 @@ export function useDocumentPiP(state: PiPState, actions: PiPActions) {
     const vizCanvas = shell.querySelector<HTMLCanvasElement>('#pip-viz')
     if (vizCanvas) {
       vizCanvas.width = pipWindow.innerWidth || 300
+      vizCanvas.height = 64
       const ctx2d = vizCanvas.getContext('2d')
       if (ctx2d) {
         const BAR_COUNT = 32
