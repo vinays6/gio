@@ -36,6 +36,7 @@ export function useGioSession({
   const gioTranscriptRef = useRef('')
   const pendingClipboardWriteRef = useRef<string | null>(null)
   const lockActivatedRef = useRef(false)
+  const preferenceActivatedRef = useRef(false)
   const wakeWordRecognitionRef = useRef<any>(null)
   const wakeWordTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isUnmountingRef = useRef(false)
@@ -117,61 +118,13 @@ export function useGioSession({
   const processSessionTags = useCallback((transcript: string): string => {
     let cleaned = transcript
 
-    // Scan A — PREFERENCE tags
-    const prefMatch = cleaned.match(/<<<PREFERENCE_START>>>([\s\S]*?)<<<PREFERENCE_END>>>/)
-    if (prefMatch) {
-      cleaned = cleaned.replace(prefMatch[0], '').trim()
-      try {
-        const pref = JSON.parse(prefMatch[1].trim()) as { action: string; genre: string; context: string }
-        const newPref = `${pref.action === 'no' ? 'Avoid' : 'Play'} ${pref.genre}${pref.context ? ` during ${pref.context}` : ''}`
-        const existing = userPreferences ? userPreferences.trim() : ''
-
-        const mergeAndSave = async () => {
-          console.log('[Gio] Preference change detected — new:', newPref, '| existing:', existing || '(none)')
-          let merged: string
-          if (!existing) {
-            merged = newPref
-            console.log('[Gio] No existing preferences — saving directly:', merged)
-          } else {
-            const apiKey = getApiKey()
-            if (!apiKey) {
-              merged = `${existing}\n${newPref}`
-              console.log('[Gio] No API key — appending without merge:', merged)
-            } else {
-              console.log('[Gio] Merging via gemini-3.1-pro-preview…')
-              const client = new GoogleGenAI({ apiKey })
-              const response = await client.models.generateContent({
-                model: 'gemini-3.1-pro-preview',
-                contents: [{
-                  role: 'user',
-                  parts: [{ text: `You manage music preferences for a user of an ambient music app. Here are their existing preferences:\n${existing}\n\nThe user just set this new preference (treat it as high priority and let it override any conflicting older preferences):\n${newPref}\n\nMerge these into a clean, concise set of music preferences. Output only the merged result as plain text, one preference per line, no extra commentary.` }],
-                }],
-              })
-              merged = response.text?.trim() ?? `${existing}\n${newPref}`
-              console.log('[Gio] Merged preferences result:', merged)
-            }
-          }
-          console.log('[Gio] Saving preferences to DB:', merged)
-          const ok = await setPreferences(merged)
-          if (!ok) throw new Error('save returned false')
-          console.log('[Gio] Preferences saved successfully')
-        }
-
-        mergeAndSave().catch((err) => {
-          console.error('[Gio] Preference save failed:', err)
-          setGioError('Preference could not be saved')
-          setTimeout(() => setGioError(null), 4000)
-        })
-      } catch (err) {
-        console.error('[Gio] Preference JSON parse error:', err)
-      }
-    }
-
-    // Scan B — LOCK tags (already activated in real-time; just strip from final transcript)
+    // Both PREFERENCE and LOCK are now activated in real-time in onmessage.
+    // processSessionTags only strips any remaining tag blocks from the final transcript.
+    cleaned = cleaned.replace(/<<<PREFERENCE_START>>>[\s\S]*?<<<PREFERENCE_END>>>/g, '').trim()
     cleaned = cleaned.replace(/<<<LOCK_START>>>[\s\S]*?<<<LOCK_END>>>/g, '').trim()
 
     return cleaned
-  }, [userPreferences, setPreferences, getApiKey])
+  }, [])
 
   const endGioSession = useCallback(async () => {
     // Always attempt clipboard write first — this runs with a user gesture
@@ -230,6 +183,7 @@ export function useGioSession({
     gioTranscriptRef.current = ''
     pendingClipboardWriteRef.current = null
     lockActivatedRef.current = false
+    preferenceActivatedRef.current = false
     setGioTranscript('')
     setGioError(null)
     setClipboardContent(null)
@@ -299,6 +253,56 @@ export function useGioSession({
                   }
                 }
               }
+
+              // Activate PREFERENCE immediately as soon as the complete block appears
+              if (!preferenceActivatedRef.current) {
+                const prefMatch = next.match(/<<<PREFERENCE_START>>>([\s\S]*?)<<<PREFERENCE_END>>>/)
+                if (prefMatch) {
+                  preferenceActivatedRef.current = true
+                  try {
+                    const pref = JSON.parse(prefMatch[1].trim()) as { action: string; genre: string; context: string }
+                    const newPref = `${pref.action === 'no' ? 'Avoid' : 'Play'} ${pref.genre}${pref.context ? ` during ${pref.context}` : ''}`
+                    const existing = userPreferences ? userPreferences.trim() : ''
+                    console.log('[Gio] Preference change detected — new:', newPref, '| existing:', existing || '(none)')
+                    const doMerge = async () => {
+                      let merged: string
+                      if (!existing) {
+                        merged = newPref
+                        console.log('[Gio] No existing preferences — saving directly:', merged)
+                      } else {
+                        const apiKey = getApiKey()
+                        if (!apiKey) {
+                          merged = `${existing}\n${newPref}`
+                          console.log('[Gio] No API key — appending without merge:', merged)
+                        } else {
+                          console.log('[Gio] Merging via gemini-3.1-pro-preview…')
+                          const client = new GoogleGenAI({ apiKey })
+                          const response = await client.models.generateContent({
+                            model: 'gemini-3.1-pro-preview',
+                            contents: [{
+                              role: 'user',
+                              parts: [{ text: `You manage music preferences for a user of an ambient music app. Here are their existing preferences:\n${existing}\n\nThe user just set this new preference (treat it as high priority and let it override any conflicting older preferences):\n${newPref}\n\nMerge these into a clean, concise set of music preferences. Output only the merged result as plain text, one preference per line, no extra commentary.` }],
+                            }],
+                          })
+                          merged = response.text?.trim() ?? `${existing}\n${newPref}`
+                          console.log('[Gio] Merged preferences result:', merged)
+                        }
+                      }
+                      console.log('[Gio] Saving preferences to DB:', merged)
+                      const ok = await setPreferences(merged)
+                      if (!ok) throw new Error('save returned false')
+                      console.log('[Gio] Preferences saved successfully')
+                    }
+                    doMerge().catch((err) => {
+                      console.error('[Gio] Preference save failed:', err)
+                      setGioError('Preference could not be saved')
+                      setTimeout(() => setGioError(null), 4000)
+                    })
+                  } catch (err) {
+                    console.error('[Gio] Preference JSON parse error:', err)
+                  }
+                }
+              }
             }
 
             // Add newline between turns, not between streaming chunks
@@ -308,6 +312,7 @@ export function useGioSession({
               gioTranscriptRef.current = next
               setGioTranscript(stripTagsForDisplay(next))
               lockActivatedRef.current = false
+              preferenceActivatedRef.current = false
             }
 
             const calls = (msg as any).toolCall?.functionCalls ?? []
