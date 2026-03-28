@@ -260,27 +260,6 @@ export function useGioSession({
 
       gioSessionRef.current = session
 
-      if (latestScreenshotRef.current) {
-        setTimeout(() => {
-          if (!gioSessionRef.current || !isGioActiveRef.current) return
-          const base64Data = latestScreenshotRef.current!.replace(/^data:image\/jpeg;base64,/, '')
-          try {
-            gioSessionRef.current.sendRealtimeInput({
-              media: { mimeType: 'image/jpeg', data: base64Data },
-            } as any)
-            gioSessionRef.current.sendClientContent({
-              turns: [{
-                role: 'user',
-                parts: [{ text: "This is what the user's screen currently looks like. Use this as context for their question." }],
-              }],
-              turnComplete: false,
-            })
-          } catch (e) {
-            console.warn('[Gio] Screenshot context send failed:', e)
-          }
-        }, 500)
-      }
-
       const micContext = new AudioContext({ sampleRate: 16000 })
       const actualRate = micContext.sampleRate
       const micSource = micContext.createMediaStreamSource(micStream)
