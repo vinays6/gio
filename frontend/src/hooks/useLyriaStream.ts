@@ -35,6 +35,7 @@ export function useLyriaStream(getApiKey: () => string) {
   const audioContextRef = useRef<AudioContext | null>(null)
   const nextPlaybackTimeRef = useRef(0)
   const masterGainRef = useRef<GainNode | null>(null)
+  const analyserRef = useRef<AnalyserNode | null>(null)
   const lyriaVolumeRef = useRef(1.0)
   const isUnmountingRef = useRef(false)
 
@@ -77,7 +78,11 @@ export function useLyriaStream(getApiKey: () => string) {
     }
     const gain = ctx.createGain()
     gain.gain.value = lyriaVolumeRef.current
-    gain.connect(ctx.destination)
+    const analyser = ctx.createAnalyser()
+    analyser.fftSize = 64  // gives 32 bins
+    analyserRef.current = analyser
+    gain.connect(analyser)
+    analyser.connect(ctx.destination)
     masterGainRef.current = gain
     return gain
   }, [])
@@ -176,6 +181,7 @@ export function useLyriaStream(getApiKey: () => string) {
     }
     audioContextRef.current = null
     masterGainRef.current = null
+    analyserRef.current = null
 
     if (!isUnmountingRef.current && nextStatus) setStatus(nextStatus)
   }, [])
@@ -329,6 +335,7 @@ export function useLyriaStream(getApiKey: () => string) {
     vocalsEnabled, setVocalsEnabled,
     onlyBassAndDrums, setOnlyBassAndDrums,
     status, error,
-    playStream, pauseStream, toggleVocals, syncPrompt, syncConfig, stopStream, applyPrompt, fadeVolume
+    playStream, pauseStream, toggleVocals, syncPrompt, syncConfig, stopStream, applyPrompt, fadeVolume,
+    analyserRef,
   }
 }

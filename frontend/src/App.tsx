@@ -2,33 +2,16 @@ import { useLyriaStream } from './hooks/useLyriaStream'
 import { useScreenCapture } from './hooks/useScreenCapture'
 import { useGioSession } from './hooks/useGioSession'
 import { useDocumentPiP } from './hooks/useDocumentPiP'
-
-import { HeroPanel } from './components/HeroPanel'
-import { ControlPanel } from './components/ControlPanel'
-import { StackSection } from './components/StackSection'
-
+import { LandingPage } from './components/LandingPage'
 import './index.css'
 
 function App() {
   const getApiKey = () => import.meta.env.VITE_GEMINI_API_KEY?.trim() ?? ''
 
-  // 1. Lyria Stream Hook
   const lyria = useLyriaStream(getApiKey)
+  const capture = useScreenCapture({ getApiKey, applyPrompt: lyria.applyPrompt })
+  const gio = useGioSession({ getApiKey, fadeVolume: lyria.fadeVolume, latestScreenshot: capture.latestScreenshot })
 
-  // 2. Screen Capture Hook
-  const capture = useScreenCapture({
-    getApiKey,
-    applyPrompt: lyria.applyPrompt,
-  })
-
-  // 3. Gio Session Hook
-  const gio = useGioSession({
-    getApiKey,
-    fadeVolume: lyria.fadeVolume,
-    latestScreenshot: capture.latestScreenshot,
-  })
-
-  // 4. Document PiP Hook
   const pip = useDocumentPiP(
     {
       status: lyria.status,
@@ -55,22 +38,17 @@ function App() {
   )
 
   return (
-    <main className="min-h-screen px-4 pb-14 pt-6 md:px-8 md:pt-12 md:pb-[56px] box-border text-center bg-[radial-gradient(circle_at_top_left,rgba(255,136,77,0.24),transparent_28%),radial-gradient(circle_at_top_right,rgba(73,166,255,0.22),transparent_24%),linear-gradient(180deg,#08131f_0%,#0e1726_45%,#101d2f_100%)] text-[#f3f4f6]">
-      <HeroPanel
+    <>
+      <LandingPage
         status={lyria.status}
         playStream={lyria.playStream}
         pauseStream={lyria.pauseStream}
-        isDocumentPiPSupported={pip.isDocumentPiPSupported}
-        openDocumentPiP={pip.openDocumentPiP}
-        isGioActive={gio.isGioActive}
-        startGioSession={gio.startGioSession}
-        endGioSession={gio.endGioSession}
-        gioError={gio.gioError}
-        pipMessage={pip.pipMessage}
         error={lyria.error}
-      />
-
-      <ControlPanel
+        analyserRef={lyria.analyserRef}
+        vocalsEnabled={lyria.vocalsEnabled}
+        toggleVocals={lyria.toggleVocals}
+        onlyBassAndDrums={lyria.onlyBassAndDrums}
+        setOnlyBassAndDrums={lyria.setOnlyBassAndDrums}
         prompt={lyria.prompt}
         setPrompt={lyria.setPrompt}
         bpm={lyria.bpm}
@@ -85,27 +63,32 @@ function App() {
         setDensityOverridden={lyria.setDensityOverridden}
         brightnessOverridden={lyria.brightnessOverridden}
         setBrightnessOverridden={lyria.setBrightnessOverridden}
-        vocalsEnabled={lyria.vocalsEnabled}
-        setVocalsEnabled={lyria.setVocalsEnabled}
-        onlyBassAndDrums={lyria.onlyBassAndDrums}
-        setOnlyBassAndDrums={lyria.setOnlyBassAndDrums}
         syncPrompt={lyria.syncPrompt}
         syncConfig={lyria.syncConfig}
-        toggleVocals={lyria.toggleVocals}
         captureOn={capture.captureOn}
         captureStatus={capture.captureStatus}
         toggleCapture={capture.toggleCapture}
-        isConnected={lyria.status === 'streaming' || lyria.status === 'paused'}
+        currentMusicPrompt={capture.currentMusicPrompt}
+        lastDetectedActivity={capture.lastDetectedActivity}
+        latestScreenshot={capture.latestScreenshot}
+        lastGeminiDecision={capture.lastGeminiDecision}
+        lastAnalysisTime={capture.lastAnalysisTime}
+        isGioActive={gio.isGioActive}
+        startGioSession={gio.startGioSession}
+        endGioSession={gio.endGioSession}
+        gioTranscript={gio.gioTranscript}
+        clipboardContent={gio.clipboardContent}
+        gioError={gio.gioError}
+        setClipboardContent={gio.setClipboardContent}
+        pendingClipboardWriteRef={gio.pendingClipboardWriteRef}
+        isDocumentPiPSupported={pip.isDocumentPiPSupported}
+        openDocumentPiP={pip.openDocumentPiP}
+        pipMessage={pip.pipMessage}
       />
-
-      <StackSection />
-
       {/* Hidden elements for screen capture */}
-      {/* eslint-disable react-hooks/refs */}
       <video ref={capture.videoRef} style={{ display: 'none' }} muted playsInline />
       <canvas ref={capture.canvasRef} width={1280} height={720} style={{ display: 'none' }} />
-      {/* eslint-enable react-hooks/refs */}
-    </main>
+    </>
   )
 }
 
