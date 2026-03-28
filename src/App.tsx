@@ -11,6 +11,9 @@ import './App.css'
 const MODEL = 'models/lyria-realtime-exp'
 const SAMPLE_RATE = 48000
 const CHANNELS = 2
+const DEFAULT_BPM = 90
+const DEFAULT_DENSITY = 0.6
+const DEFAULT_BRIGHTNESS = 0.55
 const DEFAULT_PROMPT =
   'Minimal techno with deep bass, sparse percussion, and atmospheric synths'
 
@@ -40,9 +43,12 @@ declare global {
 
 function App() {
   const [prompt, setPrompt] = useState(DEFAULT_PROMPT)
-  const [bpm, setBpm] = useState(90)
-  const [density, setDensity] = useState(0.6)
-  const [brightness, setBrightness] = useState(0.55)
+  const [bpm, setBpm] = useState(DEFAULT_BPM)
+  const [density, setDensity] = useState(DEFAULT_DENSITY)
+  const [brightness, setBrightness] = useState(DEFAULT_BRIGHTNESS)
+  const [bpmOverridden, setBpmOverridden] = useState(false)
+  const [densityOverridden, setDensityOverridden] = useState(false)
+  const [brightnessOverridden, setBrightnessOverridden] = useState(false)
   const [vocalsEnabled, setVocalsEnabled] = useState(false)
   const [onlyBassAndDrums, setOnlyBassAndDrums] = useState(false)
   const [status, setStatus] = useState<StreamStatus>('idle')
@@ -79,15 +85,28 @@ function App() {
   const getEffectivePrompt = (basePrompt: string) =>
     vocalsEnabled ? `${basePrompt}, Vocals` : basePrompt
 
-  const getConfigSummary = (): LiveMusicGenerationConfig => ({
-    bpm,
-    density,
-    brightness,
-    onlyBassAndDrums,
-    musicGenerationMode: vocalsEnabled
-      ? MusicGenerationMode.VOCALIZATION
-      : MusicGenerationMode.QUALITY,
-  })
+  const getConfigSummary = (): LiveMusicGenerationConfig => {
+    const config: LiveMusicGenerationConfig = {
+      onlyBassAndDrums,
+      musicGenerationMode: vocalsEnabled
+        ? MusicGenerationMode.VOCALIZATION
+        : MusicGenerationMode.QUALITY,
+    }
+
+    if (bpmOverridden) {
+      config.bpm = bpm
+    }
+
+    if (densityOverridden) {
+      config.density = density
+    }
+
+    if (brightnessOverridden) {
+      config.brightness = brightness
+    }
+
+    return config
+  }
 
   const stopCapture = () => {
     if (captureIntervalRef.current) {
@@ -877,6 +896,20 @@ function App() {
           <label className="field-label" htmlFor="bpm">
             BPM
           </label>
+          <label className="setting-toggle-row" htmlFor="bpm-override">
+            <span className="setting-toggle-copy">
+              <span className="setting-toggle-title">Override</span>
+              <span className="setting-toggle-description">
+                {bpmOverridden ? `${bpm} BPM` : 'Infer'}
+              </span>
+            </span>
+            <input
+              id="bpm-override"
+              type="checkbox"
+              checked={bpmOverridden}
+              onChange={(event) => setBpmOverridden(event.target.checked)}
+            />
+          </label>
           <input
             id="bpm"
             className="range-input"
@@ -885,11 +918,28 @@ function App() {
             max="200"
             value={bpm}
             onChange={(event) => setBpm(Number(event.target.value))}
+            disabled={!bpmOverridden}
           />
-          <p className="value-readout">{bpm} BPM</p>
+          <p className="value-readout">
+            {bpmOverridden ? `${bpm} BPM override` : 'Model will infer BPM'}
+          </p>
 
           <label className="field-label" htmlFor="density">
             Density
+          </label>
+          <label className="setting-toggle-row" htmlFor="density-override">
+            <span className="setting-toggle-copy">
+              <span className="setting-toggle-title">Override</span>
+              <span className="setting-toggle-description">
+                {densityOverridden ? density.toFixed(2) : 'Infer'}
+              </span>
+            </span>
+            <input
+              id="density-override"
+              type="checkbox"
+              checked={densityOverridden}
+              onChange={(event) => setDensityOverridden(event.target.checked)}
+            />
           </label>
           <input
             id="density"
@@ -900,11 +950,30 @@ function App() {
             step="0.01"
             value={density}
             onChange={(event) => setDensity(Number(event.target.value))}
+            disabled={!densityOverridden}
           />
-          <p className="value-readout">{density.toFixed(2)} density</p>
+          <p className="value-readout">
+            {densityOverridden
+              ? `${density.toFixed(2)} density override`
+              : 'Model will infer density'}
+          </p>
 
           <label className="field-label" htmlFor="brightness">
             Brightness
+          </label>
+          <label className="setting-toggle-row" htmlFor="brightness-override">
+            <span className="setting-toggle-copy">
+              <span className="setting-toggle-title">Override</span>
+              <span className="setting-toggle-description">
+                {brightnessOverridden ? brightness.toFixed(2) : 'Infer'}
+              </span>
+            </span>
+            <input
+              id="brightness-override"
+              type="checkbox"
+              checked={brightnessOverridden}
+              onChange={(event) => setBrightnessOverridden(event.target.checked)}
+            />
           </label>
           <input
             id="brightness"
@@ -915,8 +984,13 @@ function App() {
             step="0.01"
             value={brightness}
             onChange={(event) => setBrightness(Number(event.target.value))}
+            disabled={!brightnessOverridden}
           />
-          <p className="value-readout">{brightness.toFixed(2)} brightness</p>
+          <p className="value-readout">
+            {brightnessOverridden
+              ? `${brightness.toFixed(2)} brightness override`
+              : 'Model will infer brightness'}
+          </p>
 
           <label className="toggle-row" htmlFor="vocals-enabled">
             <span className="field-label toggle-label">Vocals</span>
