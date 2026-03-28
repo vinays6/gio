@@ -19,20 +19,19 @@ const DEFAULT_PROMPT =
 
 const ANALYSIS_SYSTEM_PROMPT = `You are a music director for a focus and productivity app. Your job is to decide whether the background music should change based on what the user is currently doing on their screen.
 
-You will be given:
-1. A screenshot of the user's screen
-2. The current music descriptor string (what is currently playing)
+You will be given a screenshot of the user's screen and the current music descriptor string.
 
-Your response must follow these rules EXACTLY with no exceptions:
+Respond in EXACTLY this format, always two lines, no exceptions:
+ACTIVITY: [one sentence describing what the user is doing on screen]
+MUSIC: [either the word FALSE, or a new short music descriptor phrase]
 
-- Look at the screenshot and determine what the user is doing (e.g. studying, coding, gaming, watching a video, in a meeting, browsing social media, etc.)
-- Compare the detected activity to the current music descriptor
-- If the current music fits the activity well enough (no dramatic mismatch), respond with exactly one word: FALSE
-- If there is a dramatic mismatch between the activity and the music (e.g. heavy metal while studying, party music while in a meeting, silence while exercising), respond with ONLY a new music descriptor string — a short phrase like "lo-fi hip hop" or "ambient focus" or "upbeat electronic" — nothing else
-- Do NOT explain your reasoning
-- Do NOT use punctuation outside the descriptor itself
-- Do NOT say anything other than FALSE or the new descriptor string
-- Your entire response must be either the word FALSE or a short music descriptor phrase`
+Rules for the MUSIC line:
+- If the current music fits the activity well enough, write: MUSIC: FALSE
+- If there is a dramatic mismatch (e.g. heavy metal while studying, party music while in a meeting), write a new descriptor: MUSIC: lo-fi hip hop
+- The descriptor must be short (2-5 words), no punctuation, no explanation
+- Never write anything other than FALSE or a descriptor phrase after "MUSIC: "
+
+Do not add any other lines, explanation, or formatting.`
 
 type StreamStatus =
   | 'idle'
@@ -77,8 +76,11 @@ function App() {
   const [latestScreenshot, setLatestScreenshot] = useState<string | null>(null)
   const [captureStatus, setCaptureStatus] = useState('Not capturing')
 
-  // Gemini-controlled music prompt
+  // Gemini-controlled music prompt + debug state
   const [currentMusicPrompt, setCurrentMusicPrompt] = useState('ambient')
+  const [lastDetectedActivity, setLastDetectedActivity] = useState<string | null>(null)
+  const [lastGeminiDecision, setLastGeminiDecision] = useState<string | null>(null)
+  const [lastAnalysisTime, setLastAnalysisTime] = useState<string | null>(null)
 
   const sessionRef = useRef<LiveMusicSession | null>(null)
   const lastAppliedConfigRef = useRef<LiveMusicGenerationConfig | null>(null)
@@ -135,9 +137,11 @@ function App() {
 
   const applyPrompt = async (nextPrompt: string) => {
     if (!sessionRef.current) {
+      console.log('[Analysis] applyPrompt called but sessionRef.current is null — stream not active')
       return
     }
 
+    console.log('[Analysis] Lyria update called with:', nextPrompt)
     await sessionRef.current.setWeightedPrompts({
       weightedPrompts: [{ text: getEffectivePrompt(nextPrompt), weight: 1 }],
     })
@@ -145,11 +149,23 @@ function App() {
 
   // Defined every render so it always closes over fresh state; ref kept updated below.
   const analyzeAndUpdate = async (screenshotDataUrl: string) => {
-    if (isAnalyzing.current) return
+    console.log('[Analysis] Starting analysis cycle')
+    console.log('[Analysis] Screenshot exists:', !!screenshotDataUrl)
+
+    if (isAnalyzing.current) {
+      console.log('[Analysis] Skipping — previous analysis still in flight')
+      return
+    }
     isAnalyzing.current = true
+
     try {
       const apiKey = getApiKey()
-      if (!apiKey) return
+      if (!apiKey) {
+        console.log('[Analysis] Skipping — no API key')
+        return
+      }
+
+      console.log('[Analysis] Sending to Gemini. Current music:', currentMusicPrompt)
 
       const base64Data = screenshotDataUrl.replace(/^data:image\/jpeg;base64,/, '')
       const client = new GoogleGenAI({ apiKey })
@@ -167,17 +183,33 @@ function App() {
         ],
       })
 
-      const text = (response.text ?? '').trim()
+      const rawResponse = (response.text ?? '').trim()
+      console.log('[Analysis] Raw Gemini response:', rawResponse)
 
-      if (!text || text.toUpperCase() === 'FALSE') {
-        console.log('[Music Analysis] Response: FALSE')
+      // Parse ACTIVITY: and MUSIC: lines
+      const activityMatch = rawResponse.match(/^ACTIVITY:\s*(.+)$/m)
+      const musicMatch = rawResponse.match(/^MUSIC:\s*(.+)$/m)
+
+      const activityDescription = activityMatch ? activityMatch[1].trim() : rawResponse
+      const musicDecision = musicMatch ? musicMatch[1].trim() : rawResponse
+
+      console.log('[Analysis] Parsed activity:', activityDescription)
+      console.log('[Analysis] Parsed music decision:', musicDecision)
+
+      setLastDetectedActivity(activityDescription)
+      setLastAnalysisTime(new Date().toLocaleTimeString())
+
+      if (!musicDecision || musicDecision.toUpperCase() === 'FALSE') {
+        console.log('[Analysis] Music unchanged (FALSE)')
+        setLastGeminiDecision('FALSE')
       } else {
-        console.log(`[Music Analysis] Response: "${text}" → updating music`)
-        setCurrentMusicPrompt(text)
-        await applyPrompt(text)
+        console.log('[Analysis] Music changing from:', currentMusicPrompt, '→', musicDecision)
+        setLastGeminiDecision(musicDecision)
+        setCurrentMusicPrompt(musicDecision)
+        await applyPrompt(musicDecision)
       }
     } catch (err) {
-      console.error('[Music Analysis] Error:', err)
+      console.error('[Analysis] Error:', err)
     } finally {
       isAnalyzing.current = false
     }
@@ -284,7 +316,7 @@ function App() {
       return
     }
 
-    pipWindow.document.title = 'Lyria popup'
+    pipWindow.document.title = 'Gio controls'
     pipWindow.document.body.innerHTML = ''
 
     const style = pipWindow.document.createElement('style')
@@ -297,7 +329,7 @@ function App() {
       body {
         margin: 0;
         min-height: 100vh;
-        padding: 16px;
+        padding: 12px;
         box-sizing: border-box;
         background:
           radial-gradient(circle at top, rgba(249, 115, 22, 0.24), transparent 36%),
@@ -306,96 +338,109 @@ function App() {
       }
 
       .pip-shell {
-        min-height: calc(100vh - 32px);
+        min-height: calc(100vh - 24px);
         display: grid;
-        gap: 16px;
+        gap: 10px;
         align-content: start;
         border: 1px solid rgba(255, 255, 255, 0.12);
-        border-radius: 24px;
-        padding: 18px;
+        border-radius: 20px;
+        padding: 14px;
         background: rgba(7, 12, 20, 0.82);
         backdrop-filter: blur(18px);
       }
 
       .pip-title-bar {
         display: flex;
-        align-center: center;
-        justify-content: center;
+        align-items: center;
+        gap: 10px;
       }
 
       .pip-title {
-        display: flex;
-        align-items: center;
         margin: 0;
-        font-size: 1.5rem;
+        font-size: 1.1rem;
         line-height: 1;
+        flex: 1;
       }
 
       .pip-status {
-        margin-left: 1rem;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        min-height: 36px;
-        width: fit-content;
+        height: 28px;
         border-radius: 999px;
-        padding: 0 12px;
-        font-size: 0.8rem;
+        padding: 0 10px;
+        font-size: 0.72rem;
         font-weight: 700;
         text-transform: capitalize;
         background: rgba(148, 163, 184, 0.16);
         color: #cbd5e1;
+        white-space: nowrap;
       }
 
-      .pip-status.streaming {
-        background: rgba(34, 197, 94, 0.2);
-        color: #86efac;
+      .pip-status.streaming { background: rgba(34, 197, 94, 0.2); color: #86efac; }
+      .pip-status.connecting { background: rgba(251, 191, 36, 0.18); color: #fde68a; }
+      .pip-status.error { background: rgba(248, 113, 113, 0.18); color: #fca5a5; }
+
+      .pip-debug-panel {
+        display: grid;
+        gap: 8px;
       }
 
-      .pip-status.connecting {
-        background: rgba(251, 191, 36, 0.18);
-        color: #fde68a;
+      .pip-debug-row {
+        padding: 8px 10px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, 0.04);
       }
 
-      .pip-status.error {
-        background: rgba(248, 113, 113, 0.18);
-        color: #fca5a5;
-      }
-
-      .pip-now-playing {
-        padding: 10px 14px;
-        border: 1px solid rgba(255, 255, 255, 0.1);
-        border-radius: 14px;
-        background: rgba(255, 255, 255, 0.05);
-      }
-
-      .pip-now-playing-label {
-        margin: 0 0 4px;
-        font-size: 0.65rem;
+      .pip-debug-label {
+        margin: 0 0 3px;
+        font-size: 0.6rem;
         font-weight: 700;
         letter-spacing: 0.08em;
         text-transform: uppercase;
         color: #f7b267;
       }
 
-      .pip-now-playing-value {
+      .pip-debug-value {
         margin: 0;
-        font-size: 0.85rem;
-        color: rgba(226, 232, 240, 0.92);
+        font-size: 0.78rem;
+        color: rgba(226, 232, 240, 0.85);
         line-height: 1.4;
+        word-break: break-word;
+      }
+
+      .pip-debug-value-false {
+        color: rgba(148, 163, 184, 0.7);
+      }
+
+      .pip-debug-value-change {
+        color: #86efac;
+        font-weight: 700;
+      }
+
+      .pip-debug-thumbnail {
+        max-height: 80px;
+        width: auto;
+        max-width: 100%;
+        object-fit: contain;
+        border-radius: 8px;
+        display: block;
+        border: 1px solid rgba(255, 255, 255, 0.1);
       }
 
       .pip-actions {
         display: grid;
-        gap: 12px;
-        margin-top: auto;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
       }
 
       button {
         border: 0;
-        border-radius: 16px;
-        padding: 14px 16px;
+        border-radius: 14px;
+        padding: 11px 12px;
         font: inherit;
+        font-size: 0.82rem;
         font-weight: 700;
         cursor: pointer;
       }
@@ -421,6 +466,23 @@ function App() {
     const playPauseLabel = status === 'streaming' ? 'Pause' : 'Play'
     const vocalsLabel = vocalsEnabled ? 'Vocals on' : 'Vocals off'
 
+    const thumbnailHtml = latestScreenshot
+      ? `<img class="pip-debug-thumbnail" src="${latestScreenshot}" alt="Last capture" />`
+      : `<p class="pip-debug-value">No capture yet</p>`
+
+    const activityHtml = lastDetectedActivity
+      ? `<p class="pip-debug-value">${lastDetectedActivity.replaceAll('<', '&lt;').replaceAll('>', '&gt;')}</p>`
+      : `<p class="pip-debug-value">Waiting for first analysis...</p>`
+
+    let decisionHtml: string
+    if (lastGeminiDecision === null) {
+      decisionHtml = `<p class="pip-debug-value">Waiting...</p>`
+    } else if (lastGeminiDecision === 'FALSE') {
+      decisionHtml = `<p class="pip-debug-value pip-debug-value-false">No change (FALSE)</p>`
+    } else {
+      decisionHtml = `<p class="pip-debug-value pip-debug-value-change">Changed to: ${lastGeminiDecision.replaceAll('<', '&lt;').replaceAll('>', '&gt;')}</p>`
+    }
+
     const shell = pipWindow.document.createElement('main')
     shell.className = 'pip-shell'
     shell.innerHTML = `
@@ -428,17 +490,33 @@ function App() {
         <h1 class="pip-title">Gio controls</h1>
         <span class="pip-status ${status}">${status}</span>
       </div>
-      <div class="pip-now-playing">
-        <p class="pip-now-playing-label">Now playing</p>
-        <p class="pip-now-playing-value">${currentMusicPrompt.replaceAll('<', '&lt;').replaceAll('>', '&gt;')}</p>
+      <div class="pip-debug-panel">
+        <div class="pip-debug-row">
+          <p class="pip-debug-label">Last screen capture</p>
+          ${thumbnailHtml}
+        </div>
+        <div class="pip-debug-row">
+          <p class="pip-debug-label">Gemini sees</p>
+          ${activityHtml}
+        </div>
+        <div class="pip-debug-row">
+          <p class="pip-debug-label">Gemini decision</p>
+          ${decisionHtml}
+        </div>
+        <div class="pip-debug-row">
+          <p class="pip-debug-label">Now playing</p>
+          <p class="pip-debug-value">${currentMusicPrompt.replaceAll('<', '&lt;').replaceAll('>', '&gt;')}</p>
+        </div>
+        <div class="pip-debug-row">
+          <p class="pip-debug-label">Last analysis</p>
+          <p class="pip-debug-value">${lastAnalysisTime ?? 'Not yet'}</p>
+        </div>
       </div>
       <div class="pip-actions">
         <button class="pip-primary" type="button" ${status === 'connecting' ? 'disabled' : ''}>
           ${playPauseLabel}
         </button>
-        <button class="pip-secondary" type="button" ${
-          status === 'connecting' ? 'disabled' : ''
-        }>
+        <button class="pip-secondary" type="button" ${status === 'connecting' ? 'disabled' : ''}>
           ${vocalsLabel}
         </button>
       </div>
@@ -453,7 +531,6 @@ function App() {
         void pauseStream()
         return
       }
-
       if (isPlayable) {
         void playStream()
       }
@@ -477,8 +554,8 @@ function App() {
 
     try {
       const pipWindow = await window.documentPictureInPicture!.requestWindow({
-        width: 320,
-        height: 220,
+        width: 340,
+        height: 520,
         preferInitialWindowPlacement: true,
       })
 
@@ -510,7 +587,10 @@ function App() {
 
   useEffect(() => {
     updatePiPContents()
-  }, [brightness, bpm, density, error, onlyBassAndDrums, status, vocalsEnabled, currentMusicPrompt])
+  }, [
+    brightness, bpm, density, error, onlyBassAndDrums, status, vocalsEnabled,
+    currentMusicPrompt, latestScreenshot, lastDetectedActivity, lastGeminiDecision, lastAnalysisTime,
+  ])
 
   useEffect(() => {
     if (!isDocumentPiPSupported) {
@@ -521,7 +601,6 @@ function App() {
       if (document.visibilityState !== 'hidden' || status !== 'streaming') {
         return
       }
-
       void openDocumentPiP()
     }
 
@@ -529,7 +608,6 @@ function App() {
       if (status !== 'streaming') {
         return
       }
-
       void openDocumentPiP()
     }
 
