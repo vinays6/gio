@@ -1,3 +1,4 @@
+import { useUser } from './hooks/useUser'
 import { useLyriaStream } from './hooks/useLyriaStream'
 import { useScreenCapture } from './hooks/useScreenCapture'
 import { useGioSession } from './hooks/useGioSession'
@@ -12,6 +13,9 @@ import './index.css'
 function App() {
   const getApiKey = () => import.meta.env.VITE_GEMINI_API_KEY?.trim() ?? ''
 
+  // 0. User Hook
+  const { user, loading, setPreferences } = useUser()
+
   // 1. Lyria Stream Hook
   const lyria = useLyriaStream(getApiKey)
 
@@ -19,6 +23,7 @@ function App() {
   const capture = useScreenCapture({
     getApiKey,
     applyPrompt: lyria.applyPrompt,
+    userPreferences: user?.preferences,
   })
 
   // 3. Gio Session Hook
@@ -71,6 +76,9 @@ function App() {
       />
 
       <ControlPanel
+        user={user}
+        userLoading={loading}
+        setPreferences={setPreferences}
         prompt={lyria.prompt}
         setPrompt={lyria.setPrompt}
         bpm={lyria.bpm}

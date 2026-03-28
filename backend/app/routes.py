@@ -12,12 +12,11 @@ google = oauth.register(
     name='google',
     client_id=os.getenv('GOOGLE_CLIENT_ID'),
     client_secret=os.getenv('GOOGLE_CLIENT_SECRET'),
-    access_token_url='https://oauth2.googleapis.com/token',
-    access_token_params=None,
-    authorize_url='https://accounts.google.com/o/oauth2/auth',
-    authorize_params=None,
+    server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
     api_base_url='https://www.googleapis.com/oauth2/v1/',
-    client_kwargs={'scope': 'openid email profile'}
+    client_kwargs={
+        'scope': 'openid email profile'
+    }
 )
 
 @api_bp.record_once
@@ -26,12 +25,21 @@ def on_load(state):
     
 @api_bp.route('/login')
 def login():
-    redirect_uri = url_for('.authorize', _external=True)
+    frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:5173/')
+    redirect_uri = frontend_url.rstrip('/') + '/authorize'
     return google.authorize_redirect(redirect_uri)
+
+from authlib.integrations.base_client.errors import MismatchingStateError
 
 @api_bp.route('/authorize')
 def authorize():
-    token = google.authorize_access_token()
+    try:
+        token = google.authorize_access_token()
+    except MismatchingStateError:
+        return redirect('/login')
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
     resp = google.get('userinfo')
     user_info = resp.json()
     email = user_info['email']
@@ -41,7 +49,8 @@ def authorize():
         db.session.add(user)
         db.session.commit()
     session['user'] = user.id
-    return redirect('/')
+    frontend_url = os.getenv('FRONTEND_URL', 'http://localhost:5173/')
+    return redirect(frontend_url)
 
 @api_bp.route('/api/user', methods=['GET'])
 def get_user():

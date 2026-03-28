@@ -1,4 +1,10 @@
+import { useState } from 'react'
+import type { User } from '../hooks/useUser'
+
 interface ControlPanelProps {
+  user: User | null
+  userLoading: boolean
+  setPreferences: (preferences: string) => Promise<boolean>
   prompt: string
   setPrompt: (v: string) => void
   bpm: number
@@ -27,6 +33,7 @@ interface ControlPanelProps {
 }
 
 export function ControlPanel({
+  user, userLoading, setPreferences,
   prompt, setPrompt,
   bpm, setBpm,
   density, setDensity,
@@ -40,6 +47,24 @@ export function ControlPanel({
   captureOn, captureStatus, toggleCapture,
   isConnected
 }: ControlPanelProps) {
+  const [prefDraft, setPrefDraft] = useState<string>('')
+  const [isEditing, setIsEditing] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
+
+  const handleEditClick = () => {
+    setPrefDraft(user?.preferences || '')
+    setIsEditing(true)
+  }
+
+  const handleSaveClick = async () => {
+    setIsSaving(true)
+    const success = await setPreferences(prefDraft)
+    setIsSaving(false)
+    if (success) {
+      setIsEditing(false)
+    }
+  }
+
   return (
     <section className="grid grid-cols-2 gap-[14px] max-[860px]:grid-cols-1 max-w-[1120px] mx-auto">
       <div className="flex flex-col min-h-full gap-[14px]">
@@ -65,6 +90,65 @@ export function ControlPanel({
           >
             Apply prompt
           </button>
+        </section>
+
+        {/* Profile Card */}
+        <section className="flex flex-col rounded-[24px] p-[28px] text-left border border-white/12 bg-[#070c14]/70 backdrop-blur-[18px]">
+          <div className="mb-[22px]">
+            <p className="m-0 mb-2.5 text-orange-300 text-[0.78rem] font-bold tracking-[0.08em] uppercase">Profile</p>
+            <h2 className="m-0 text-[#f8fafc] text-[1.7rem]">Preferences</h2>
+          </div>
+          {userLoading ? (
+            <p className="text-slate-200/70 text-[0.85rem]">Loading profile...</p>
+          ) : !user ? (
+            <div>
+              <p className="mb-4 text-slate-200/80 text-[0.85rem] leading-snug">Sign in to set your global music preferences. These guide the activity monitor in choosing the perfect soundtrack.</p>
+              <a href="/login" className="inline-block border border-white/12 rounded-[18px] py-[10px] px-[16px] font-bold cursor-pointer transition-all hover:-translate-y-[1px] bg-white/10 text-slate-200 no-underline text-center">Login with Google</a>
+            </div>
+          ) : (
+            <div>
+              <p className="mb-3 text-slate-200/80 text-[0.8rem]">Logged in as <b>{user.name || user.email}</b></p>
+              {!isEditing ? (
+                <div className="flex flex-col gap-3">
+                  <div className="p-3 border border-white/12 rounded-[12px] bg-slate-900/50 text-slate-300 text-[0.85rem] min-h-[40px] italic">
+                    {user.preferences ? `"${user.preferences}"` : "No preferences set. Example: 'hates country, prefers rap for gaming'"}
+                  </div>
+                  <button
+                    onClick={handleEditClick}
+                    className="self-start border border-white/12 rounded-[12px] py-[8px] px-[14px] text-[0.8rem] font-bold cursor-pointer transition-all hover:-translate-y-[1px] bg-white/5 text-slate-200"
+                  >
+                    Edit Preferences
+                  </button>
+                </div>
+              ) : (
+                <div className="flex flex-col gap-3">
+                  <textarea
+                    className="w-full box-border border border-white/12 rounded-[12px] p-3 bg-slate-900/70 text-slate-50 text-[0.85rem] resize-y placeholder:text-slate-400/50"
+                    rows={3}
+                    placeholder="e.g. loves jazz, no vocals while studying"
+                    value={prefDraft}
+                    onChange={(e) => setPrefDraft(e.target.value)}
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleSaveClick}
+                      disabled={isSaving}
+                      className="border border-white/12 rounded-[12px] py-[8px] px-[14px] text-[0.8rem] font-bold cursor-pointer transition-all hover:-translate-y-[1px] bg-orange-500/80 text-white disabled:opacity-50"
+                    >
+                      {isSaving ? 'Saving...' : 'Save'}
+                    </button>
+                    <button
+                      onClick={() => setIsEditing(false)}
+                      disabled={isSaving}
+                      className="border border-white/12 rounded-[12px] py-[8px] px-[14px] text-[0.8rem] font-bold cursor-pointer transition-all hover:-translate-y-[1px] bg-white/5 text-slate-300"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </section>
 
         {/* Capture Card */}
