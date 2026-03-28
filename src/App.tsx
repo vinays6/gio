@@ -305,8 +305,7 @@ function App() {
     }
   }, [isDocumentPiPSupported, status])
 
-  const getApiKey = () => 'AIzaSyDBbq8wMluSb8BzaFEIWXapfccfOnPHl7U'
-  // const getApiKey = () => import.meta.env.VITE_GEMINI_API_KEY?.trim() ?? ''
+  const getApiKey = () => import.meta.env.VITE_GEMINI_API_KEY?.trim() ?? ''
 
   const ensureAudioContext = async () => {
     if (!audioContextRef.current) {
