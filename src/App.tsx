@@ -98,6 +98,7 @@ function App() {
   // Analysis refs
   const isAnalyzing = useRef(false)
   const analyzeAndUpdateRef = useRef<((dataUrl: string) => Promise<void>) | null>(null)
+  const showDebugRef = useRef(false)
 
   const isDocumentPiPSupported =
     typeof window !== 'undefined' && 'documentPictureInPicture' in window
@@ -261,13 +262,13 @@ function App() {
         const dataUrl = canvas.toDataURL('image/jpeg', 0.7)
         setLatestScreenshot(dataUrl)
         const timeStr = new Date().toLocaleTimeString()
-        setCaptureStatus(`Capturing every 10s — last captured at ${timeStr}`)
+        setCaptureStatus(`Capturing every 3s — last captured at ${timeStr}`)
         console.log('[Screenshot] Captured at ' + timeStr + ', base64 length: ' + dataUrl.length)
         void analyzeAndUpdateRef.current?.(dataUrl)
-      }, 10000)
+      }, 3000)
 
       setCaptureOn(true)
-      setCaptureStatus('Capturing every 10s — waiting for first capture...')
+      setCaptureStatus('Capturing every 3s — waiting for first capture...')
     } catch {
       setCaptureOn(false)
       setCaptureStatus('Screen share was denied or cancelled')
@@ -381,19 +382,14 @@ function App() {
       .pip-status.connecting { background: rgba(251, 191, 36, 0.18); color: #fde68a; }
       .pip-status.error { background: rgba(248, 113, 113, 0.18); color: #fca5a5; }
 
-      .pip-debug-panel {
-        display: grid;
-        gap: 8px;
-      }
-
-      .pip-debug-row {
+      .pip-now-playing {
         padding: 8px 10px;
-        border: 1px solid rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(249, 115, 22, 0.22);
         border-radius: 12px;
-        background: rgba(255, 255, 255, 0.04);
+        background: rgba(249, 115, 22, 0.07);
       }
 
-      .pip-debug-label {
+      .pip-now-playing-label {
         margin: 0 0 3px;
         font-size: 0.6rem;
         font-weight: 700;
@@ -402,16 +398,70 @@ function App() {
         color: #f7b267;
       }
 
+      .pip-now-playing-value {
+        margin: 0;
+        font-size: 0.82rem;
+        color: #f8fafc;
+        line-height: 1.4;
+        word-break: break-word;
+      }
+
+      .pip-debug-toggle {
+        width: 100%;
+        background: rgba(255, 255, 255, 0.04);
+        border: 1px solid rgba(255, 255, 255, 0.09) !important;
+        border-radius: 10px;
+        padding: 6px 10px;
+        font-size: 0.68rem;
+        font-weight: 700;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+        color: rgba(226, 232, 240, 0.45);
+        cursor: pointer;
+        text-align: left;
+      }
+
+      .pip-debug-toggle:hover {
+        background: rgba(255, 255, 255, 0.07);
+        color: rgba(226, 232, 240, 0.65);
+      }
+
+      .pip-debug-drawer {
+        display: none;
+      }
+
+      .pip-debug-drawer.open {
+        display: grid;
+        gap: 5px;
+      }
+
+      .pip-debug-row {
+        padding: 7px 9px;
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 10px;
+        background: rgba(0, 0, 0, 0.28);
+      }
+
+      .pip-debug-label {
+        margin: 0 0 2px;
+        font-size: 0.58rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: rgba(247, 178, 103, 0.65);
+      }
+
       .pip-debug-value {
         margin: 0;
-        font-size: 0.78rem;
-        color: rgba(226, 232, 240, 0.85);
+        font-family: ui-monospace, Consolas, monospace;
+        font-size: 0.7rem;
+        color: rgba(226, 232, 240, 0.65);
         line-height: 1.4;
         word-break: break-word;
       }
 
       .pip-debug-value-false {
-        color: rgba(148, 163, 184, 0.7);
+        color: rgba(148, 163, 184, 0.5);
       }
 
       .pip-debug-value-change {
@@ -420,13 +470,13 @@ function App() {
       }
 
       .pip-debug-thumbnail {
-        max-height: 80px;
+        max-height: 70px;
         width: auto;
         max-width: 100%;
         object-fit: contain;
-        border-radius: 8px;
+        border-radius: 6px;
         display: block;
-        border: 1px solid rgba(255, 255, 255, 0.1);
+        border: 1px solid rgba(255, 255, 255, 0.08);
       }
 
       .pip-actions {
@@ -483,6 +533,7 @@ function App() {
       decisionHtml = `<p class="pip-debug-value pip-debug-value-change">Changed to: ${lastGeminiDecision.replaceAll('<', '&lt;').replaceAll('>', '&gt;')}</p>`
     }
 
+    const debugOpen = showDebugRef.current
     const shell = pipWindow.document.createElement('main')
     shell.className = 'pip-shell'
     shell.innerHTML = `
@@ -490,7 +541,12 @@ function App() {
         <h1 class="pip-title">Gio controls</h1>
         <span class="pip-status ${status}">${status}</span>
       </div>
-      <div class="pip-debug-panel">
+      <div class="pip-now-playing">
+        <p class="pip-now-playing-label">Now playing</p>
+        <p class="pip-now-playing-value">${currentMusicPrompt.replaceAll('<', '&lt;').replaceAll('>', '&gt;')}</p>
+      </div>
+      <button class="pip-debug-toggle" type="button">Debug ${debugOpen ? '▲' : '▼'}</button>
+      <div class="pip-debug-drawer${debugOpen ? ' open' : ''}">
         <div class="pip-debug-row">
           <p class="pip-debug-label">Last screen capture</p>
           ${thumbnailHtml}
@@ -502,10 +558,6 @@ function App() {
         <div class="pip-debug-row">
           <p class="pip-debug-label">Gemini decision</p>
           ${decisionHtml}
-        </div>
-        <div class="pip-debug-row">
-          <p class="pip-debug-label">Now playing</p>
-          <p class="pip-debug-value">${currentMusicPrompt.replaceAll('<', '&lt;').replaceAll('>', '&gt;')}</p>
         </div>
         <div class="pip-debug-row">
           <p class="pip-debug-label">Last analysis</p>
@@ -525,6 +577,11 @@ function App() {
     pipWindow.document.head.innerHTML = ''
     pipWindow.document.head.appendChild(style)
     pipWindow.document.body.appendChild(shell)
+
+    shell.querySelector<HTMLButtonElement>('.pip-debug-toggle')?.addEventListener('click', () => {
+      showDebugRef.current = !showDebugRef.current
+      updatePiPContents()
+    })
 
     shell.querySelector<HTMLButtonElement>('.pip-primary')?.addEventListener('click', () => {
       if (status === 'streaming') {
@@ -1125,6 +1182,53 @@ function App() {
             Apply settings
           </button>
         </section>
+      </section>
+
+      <section className="powered-by-section">
+        <p className="eyebrow">Stack</p>
+        <h2 className="powered-by-heading">Powered by</h2>
+        <div className="powered-by-grid">
+          <div className="powered-by-card">
+            <p className="powered-by-model">gemini-2.5-flash</p>
+            <p className="powered-by-desc">Vision analysis and music direction</p>
+            <div className="powered-by-badges">
+              <span className="powered-by-badge badge-ai">Vision</span>
+              <span className="powered-by-badge badge-ai">Reasoning</span>
+            </div>
+          </div>
+          <div className="powered-by-card">
+            <p className="powered-by-model">lyria-realtime-exp</p>
+            <p className="powered-by-desc">Realtime adaptive music generation</p>
+            <div className="powered-by-badges">
+              <span className="powered-by-badge badge-ai">Music Generation</span>
+            </div>
+          </div>
+          <div className="powered-by-card">
+            <p className="powered-by-model">getDisplayMedia</p>
+            <p className="powered-by-desc">Screen capture for activity analysis</p>
+            <span className="powered-by-badge badge-browser">Browser API</span>
+          </div>
+          <div className="powered-by-card">
+            <p className="powered-by-model">Picture-in-Picture API</p>
+            <p className="powered-by-desc">Floating player while you work</p>
+            <span className="powered-by-badge badge-browser">Browser API</span>
+          </div>
+          <div className="powered-by-card">
+            <p className="powered-by-model">Web Audio API</p>
+            <p className="powered-by-desc">PCM16 audio scheduling and playback</p>
+            <span className="powered-by-badge badge-browser">Browser API</span>
+          </div>
+          <div className="powered-by-card">
+            <p className="powered-by-model">Canvas API</p>
+            <p className="powered-by-desc">Frame extraction from video stream</p>
+            <span className="powered-by-badge badge-browser">Browser API</span>
+          </div>
+          <div className="powered-by-card">
+            <p className="powered-by-model">WebSocket API</p>
+            <p className="powered-by-desc">Realtime connection to Lyria model</p>
+            <span className="powered-by-badge badge-browser">Browser API</span>
+          </div>
+        </div>
       </section>
 
       {/* Hidden elements for screen capture — never visible to user */}
