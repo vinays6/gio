@@ -4,7 +4,7 @@ function getConfiguredBackendOrigin() {
 
   if (window.location.port === '5173') {
     const devHost = window.location.hostname || '127.0.0.1'
-    return `http://${devHost}:5000`
+    return `http://${devHost}:5100`
   }
 
   return `${window.location.protocol}//${window.location.host}`
@@ -16,7 +16,7 @@ function getConfiguredRealtimeOrigin() {
 
   if (window.location.port === '5173') {
     const devHost = window.location.hostname || '127.0.0.1'
-    return `http://${devHost}:5001`
+    return `http://${devHost}:5101`
   }
 
   return getConfiguredBackendOrigin()

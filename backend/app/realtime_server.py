@@ -638,7 +638,7 @@ def ensure_realtime_server_started() -> None:
             return
 
         host = os.getenv("REALTIME_WS_HOST", "127.0.0.1")
-        port = int(os.getenv("REALTIME_WS_PORT", "5001"))
+        port = int(os.getenv("REALTIME_WS_PORT", "5101"))
         _server_thread = threading.Thread(
             target=_run_realtime_server,
             args=(host, port),

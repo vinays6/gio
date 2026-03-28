@@ -12,7 +12,7 @@
    python run.py
    ```
 
-The backend runs on port 5000.
+The backend runs on port 5100.
 
 ## API
 - `GET /login`: Initiate OAuth login with Google.
