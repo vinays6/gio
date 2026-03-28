@@ -15,6 +15,7 @@ export interface PiPState {
   gioError: string | null
   pendingClipboardWriteRef?: React.MutableRefObject<string | null>
   analyserRef?: React.RefObject<AnalyserNode | null>
+  musicLock?: { prompt: string; expiresAt: number; remainingSeconds: number } | null
 }
 
 export interface PiPActions {
@@ -124,6 +125,16 @@ export function useDocumentPiP(state: PiPState, actions: PiPActions) {
       .pip-marquee-inner {
         display: inline-block; font-size: 13px; color: #f0f0f0;
         white-space: nowrap;
+      }
+      .pip-lock-status {
+        flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px;
+      }
+      .pip-lock-prompt {
+        font-size: 13px; color: #fbbf24; white-space: nowrap;
+        overflow: hidden; text-overflow: ellipsis;
+      }
+      .pip-lock-countdown {
+        font-size: 10px; color: rgba(251,191,36,0.65); letter-spacing: 0.04em;
       }
       .pip-marquee-inner.scrolling {
         animation: pipMarquee var(--md, 8s) linear infinite;
@@ -241,9 +252,14 @@ export function useDocumentPiP(state: PiPState, actions: PiPActions) {
             ${state.status === 'connecting' ? 'disabled' : ''}>
             ${isPlaying ? '⏸' : '▶'}
           </button>
+          ${state.musicLock ? `
+          <div class="pip-lock-status">
+            <span class="pip-lock-prompt"><span style="font-size:12px">🔒</span> ${esc(state.musicLock.prompt)}</span>
+            <span class="pip-lock-countdown">${String(Math.floor(state.musicLock.remainingSeconds / 60)).padStart(1, '0')}:${String(state.musicLock.remainingSeconds % 60).padStart(2, '0')} remaining</span>
+          </div>` : `
           <div class="pip-marquee-wrap" id="pip-marquee-wrap">
             <span class="pip-marquee-inner" id="pip-marquee-inner">${esc(state.currentMusicPrompt || 'ambient')}</span>
-          </div>
+          </div>`}
         </div>
       </div>
 

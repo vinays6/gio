@@ -7,10 +7,12 @@ export function useGioSession({
   getApiKey,
   fadeVolume,
   latestScreenshot,
+  activateLock,
 }: {
   getApiKey: () => string
   fadeVolume: (targetVolume: number, durationMs: number) => void
   latestScreenshot: string | null
+  activateLock: (prompt: string, minutes: number) => void
 }) {
   const [isGioActive, setIsGioActive] = useState(false)
   const [gioTranscript, setGioTranscript] = useState('')
@@ -96,6 +98,53 @@ export function useGioSession({
     source.start(startAt)
     gioNextPlaybackTimeRef.current = startAt + audioBuffer.duration
   }
+
+  const processSessionTags = useCallback((transcript: string): string => {
+    let cleaned = transcript
+
+    // Scan A — PREFERENCE tags
+    const prefMatch = cleaned.match(/<<<PREFERENCE_START>>>([\s\S]*?)<<<PREFERENCE_END>>>/)
+    if (prefMatch) {
+      cleaned = cleaned.replace(prefMatch[0], '').trim()
+      try {
+        const pref = JSON.parse(prefMatch[1].trim()) as { action: string; genre: string; context: string }
+        const label = `${pref.action === 'no' ? 'No' : 'Yes'} ${pref.genre} while ${pref.context}`
+        fetch('/api/user')
+          .then(r => r.ok ? r.json() : Promise.reject(r))
+          .then((userData: { preferences?: string | null }) => {
+            const existing = userData.preferences ? userData.preferences.trim() : ''
+            const next = existing ? `${existing}\n${label}` : label
+            return fetch('/api/user/preferences', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ preferences: next }),
+            })
+          })
+          .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`) })
+          .catch((err) => {
+            console.error('[Gio] Preference save failed:', err)
+            setGioError('Preference could not be saved')
+            setTimeout(() => setGioError(null), 4000)
+          })
+      } catch (err) {
+        console.error('[Gio] Preference JSON parse error:', err)
+      }
+    }
+
+    // Scan B — LOCK tags
+    const lockMatch = cleaned.match(/<<<LOCK_START>>>([\s\S]*?)<<<LOCK_END>>>/)
+    if (lockMatch) {
+      cleaned = cleaned.replace(lockMatch[0], '').trim()
+      try {
+        const lock = JSON.parse(lockMatch[1].trim()) as { prompt: string; minutes: number }
+        activateLock(lock.prompt, Math.min(60, Math.max(1, lock.minutes ?? 5)))
+      } catch (err) {
+        console.error('[Gio] Lock JSON parse error:', err)
+      }
+    }
+
+    return cleaned
+  }, [activateLock])
 
   const endGioSession = useCallback(async () => {
     // Always attempt clipboard write first — this runs with a user gesture
@@ -255,6 +304,14 @@ export function useGioSession({
             // Session closed (naturally or otherwise) — try to flush any pending clipboard write.
             if (pendingClipboardWriteRef.current) {
               void writeToClipboard(pendingClipboardWriteRef.current)
+            }
+            // Parse and strip PREFERENCE / LOCK tags from the final transcript.
+            if (gioTranscriptRef.current) {
+              const cleaned = processSessionTags(gioTranscriptRef.current)
+              if (cleaned !== gioTranscriptRef.current) {
+                gioTranscriptRef.current = cleaned
+                setGioTranscript(cleaned)
+              }
             }
           },
         },

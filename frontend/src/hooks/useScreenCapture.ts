@@ -22,20 +22,28 @@ export function useScreenCapture({
   const [lastDetectedActivity, setLastDetectedActivity] = useState<string | null>(null)
   const [lastGeminiDecision, setLastGeminiDecision] = useState<string | null>(null)
   const [lastAnalysisTime, setLastAnalysisTime] = useState<string | null>(null)
+  const [musicLock, setMusicLock] = useState<{
+    prompt: string
+    expiresAt: number
+    remainingSeconds: number
+  } | null>(null)
 
   const videoRef = useRef<HTMLVideoElement | null>(null)
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const captureStreamRef = useRef<MediaStream | null>(null)
   const captureIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const workerRef = useRef<Worker | null>(null)
+  const lockTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const isAnalyzing = useRef(false)
   const analyzeAndUpdateRef = useRef<((dataUrl: string) => Promise<void>) | null>(null)
   const userPreferencesRef = useRef(userPreferences)
   const currentMusicPromptRef = useRef(currentMusicPrompt)
+  const musicLockRef = useRef(musicLock)
 
   useEffect(() => { userPreferencesRef.current = userPreferences }, [userPreferences])
   useEffect(() => { currentMusicPromptRef.current = currentMusicPrompt }, [currentMusicPrompt])
+  useEffect(() => { musicLockRef.current = musicLock }, [musicLock])
 
   // Initialize worker once (only on browsers that support OffscreenCanvas)
   useEffect(() => {
@@ -48,7 +56,30 @@ export function useScreenCapture({
     }
   }, [])
 
+  const activateLock = useCallback((prompt: string, minutes: number) => {
+    if (lockTimerRef.current) {
+      clearInterval(lockTimerRef.current)
+      lockTimerRef.current = null
+    }
+    const expiresAt = Date.now() + minutes * 60 * 1000
+    setMusicLock({ prompt, expiresAt, remainingSeconds: minutes * 60 })
+    void applyPrompt(prompt)
+    lockTimerRef.current = setInterval(() => {
+      const remaining = Math.max(0, Math.ceil((expiresAt - Date.now()) / 1000))
+      setMusicLock(prev => prev ? { ...prev, remainingSeconds: remaining } : null)
+      if (remaining === 0) {
+        clearInterval(lockTimerRef.current!)
+        lockTimerRef.current = null
+        setMusicLock(null)
+      }
+    }, 1000)
+  }, [applyPrompt])
+
   const analyzeAndUpdate = useCallback(async (screenshotDataUrl: string) => {
+    if (musicLockRef.current !== null) {
+      console.log('[Analysis] Skipping — music lock active, ' + musicLockRef.current.remainingSeconds + 's remaining')
+      return
+    }
     console.log('[Analysis] Starting cycle')
     if (isAnalyzing.current) {
       console.log('[Analysis] Skipping — in flight')
@@ -117,6 +148,10 @@ export function useScreenCapture({
     if (captureIntervalRef.current) {
       clearInterval(captureIntervalRef.current)
       captureIntervalRef.current = null
+    }
+    if (lockTimerRef.current) {
+      clearInterval(lockTimerRef.current)
+      lockTimerRef.current = null
     }
     if (captureStreamRef.current) {
       captureStreamRef.current.getTracks().forEach((t) => t.stop())
@@ -212,6 +247,8 @@ export function useScreenCapture({
     lastDetectedActivity,
     lastGeminiDecision,
     lastAnalysisTime,
+    musicLock,
+    activateLock,
     toggleCapture,
     videoRef,
     canvasRef,
