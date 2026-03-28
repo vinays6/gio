@@ -26,6 +26,7 @@ function App() {
     {
       status: lyria.status,
       vocalsEnabled: lyria.vocalsEnabled,
+      analyserRef: lyria.analyserRef,
       currentMusicPrompt: capture.currentMusicPrompt,
       latestScreenshot: capture.latestScreenshot,
       lastDetectedActivity: capture.lastDetectedActivity,
