@@ -53,19 +53,14 @@ export function useDocumentPiP(state: PiPState, actions: PiPActions) {
       * { box-sizing: border-box; margin: 0; padding: 0; }
       body {
         background: #111; color: #f0f0f0;
-        width: 280px; min-height: 100vh;
+        width: 100vw; min-height: 100vh;
         overflow-x: hidden;
       }
       .pip-root {
         display: flex; flex-direction: column;
-        background: #1a1a1a; border-radius: 20px;
-        box-shadow: 0 8px 32px rgba(0,0,0,0.45);
+        background: #1a1a1a;
         overflow: hidden;
-        animation: pipSlideIn 350ms cubic-bezier(0.22,1,0.36,1) forwards;
-      }
-      @keyframes pipSlideIn {
-        from { transform: translateX(100%); opacity: 0; }
-        to   { transform: translateX(0);    opacity: 1; }
+        min-height: 100vh;
       }
       .pip-header {
         height: 36px; display: flex; align-items: center; justify-content: center;
@@ -378,7 +373,7 @@ export function useDocumentPiP(state: PiPState, actions: PiPActions) {
     try {
       const pipWindow = await window.documentPictureInPicture!.requestWindow({
         width: 300,
-        height: 500,
+        height: 480,
         preferInitialWindowPlacement: true,
       })
       pipWindowRef.current = pipWindow
