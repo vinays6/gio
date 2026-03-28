@@ -159,6 +159,7 @@ function App() {
   const gioNextPlaybackTimeRef = useRef(0)
   const isGioActiveRef = useRef(false)
   const gioTranscriptRef = useRef('')
+  const clipboardProcessedRef = useRef(false)
   const startGioSessionRef = useRef<(() => Promise<void>) | null>(null)
   const endGioSessionRef = useRef<(() => Promise<void>) | null>(null)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -429,7 +430,17 @@ function App() {
         await navigator.clipboard.writeText(content)
         console.log('[Gio] Copied to clipboard, length:', content.length)
       } else {
-        console.warn('[Gio] Clipboard API not available')
+        // Fallback: textarea execCommand (works without document focus)
+        const ta = document.createElement('textarea')
+        ta.value = content
+        ta.style.position = 'fixed'
+        ta.style.opacity = '0'
+        document.body.appendChild(ta)
+        ta.focus()
+        ta.select()
+        document.execCommand('copy')
+        document.body.removeChild(ta)
+        console.log('[Gio] Copied to clipboard via fallback, length:', content.length)
       }
     } catch (err) {
       console.warn('[Gio] Clipboard write failed:', err)
@@ -450,8 +461,10 @@ function App() {
 
     // Reset per-session state
     gioTranscriptRef.current = ''
+    clipboardProcessedRef.current = false
     setGioTranscript('')
     setGioError(null)
+    setClipboardContent(null)
     gioNextPlaybackTimeRef.current = 0
 
     isGioActiveRef.current = true
@@ -474,19 +487,32 @@ function App() {
         },
         callbacks: {
           onmessage: (msg) => {
-            // Accumulate text
-            if (msg.text) {
-              setGioTranscript(prev => {
-                const next = prev + msg.text!
-                gioTranscriptRef.current = next
-                return next
-              })
-            }
-            // Play audio chunks
+            // Collect text from every possible location the SDK may place it
+            const textChunks: string[] = []
+            if (msg.text) textChunks.push(msg.text)
+            // outputTranscription (audio-mode transcription)
+            const transcription = (msg as any).serverContent?.outputTranscription?.text
+            if (transcription) textChunks.push(transcription)
+            // inline text parts
             const parts = msg.serverContent?.modelTurn?.parts ?? []
             for (const part of parts) {
+              if ((part as any).text) textChunks.push((part as any).text)
               if (part.inlineData?.data) {
                 void scheduleGioAudioChunk(part.inlineData.data, part.inlineData.mimeType)
+              }
+            }
+            if (textChunks.length > 0) {
+              const chunk = textChunks.join('')
+              const next = gioTranscriptRef.current + chunk
+              gioTranscriptRef.current = next
+              setGioTranscript(next)
+              // Trigger clipboard detection as soon as closing marker arrives
+              if (next.includes('<<<CLIPBOARD_END>>>') && !clipboardProcessedRef.current) {
+                clipboardProcessedRef.current = true
+                void processGioTranscript(next).then(clean => {
+                  gioTranscriptRef.current = clean
+                  setGioTranscript(clean)
+                })
               }
             }
           },
@@ -512,23 +538,26 @@ function App() {
 
       gioSessionRef.current = session
 
-      // Send latest screenshot as visual context
+      // Send latest screenshot as visual context — small delay to ensure WS is fully open
       if (latestScreenshot) {
-        const base64Data = latestScreenshot.replace(/^data:image\/jpeg;base64,/, '')
-        try {
-          session.sendClientContent({
-            turns: [{
-              role: 'user',
-              parts: [
-                { inlineData: { mimeType: 'image/jpeg', data: base64Data } },
-                { text: "This is what the user's screen currently looks like. Use this as context for their question." },
-              ],
-            }],
-            turnComplete: false,
-          })
-        } catch (e) {
-          console.warn('[Gio] Screenshot context send failed:', e)
-        }
+        setTimeout(() => {
+          if (!gioSessionRef.current || !isGioActiveRef.current) return
+          const base64Data = latestScreenshot.replace(/^data:image\/jpeg;base64,/, '')
+          try {
+            gioSessionRef.current.sendClientContent({
+              turns: [{
+                role: 'user',
+                parts: [
+                  { inlineData: { mimeType: 'image/jpeg', data: base64Data } },
+                  { text: "This is what the user's screen currently looks like. Use this as context for their question." },
+                ],
+              }],
+              turnComplete: false,
+            })
+          } catch (e) {
+            console.warn('[Gio] Screenshot context send failed:', e)
+          }
+        }, 500)
       }
 
       // Microphone audio streaming via ScriptProcessor
@@ -1069,7 +1098,7 @@ function App() {
         ${gioClipboardHtml}
         ${gioErrorHtml}
         <button class="pip-gio-btn${isGioActive ? ' active' : ''}" type="button">
-          ${isGioActive ? '🎙 Listening...' : 'Hold to talk to Gio'}
+          ${isGioActive ? '🎙 Stop Gio' : 'Talk to Gio'}
         </button>
       </div>
       <button class="pip-debug-toggle" type="button">Debug ${debugOpen ? '▲' : '▼'}</button>
@@ -1113,10 +1142,13 @@ function App() {
 
     const gioBtn = shell.querySelector<HTMLButtonElement>('.pip-gio-btn')
     if (gioBtn) {
-      gioBtn.addEventListener('mousedown', () => void startGioSessionRef.current?.())
-      gioBtn.addEventListener('mouseup', () => void endGioSessionRef.current?.())
-      gioBtn.addEventListener('touchstart', (e) => { e.preventDefault(); void startGioSessionRef.current?.() })
-      gioBtn.addEventListener('touchend', (e) => { e.preventDefault(); void endGioSessionRef.current?.() })
+      gioBtn.addEventListener('click', () => {
+        if (isGioActiveRef.current) {
+          void endGioSessionRef.current?.()
+        } else {
+          void startGioSessionRef.current?.()
+        }
+      })
     }
 
     shell.querySelector<HTMLButtonElement>('.pip-gio-clipboard-copy')?.addEventListener('click', () => {
@@ -1325,12 +1357,9 @@ function App() {
         <div className="gio-row">
           <button
             className={`gio-button${isGioActive ? ' gio-button-active' : ''}`}
-            onMouseDown={() => void startGioSession()}
-            onMouseUp={() => void endGioSession()}
-            onTouchStart={(e) => { e.preventDefault(); void startGioSession() }}
-            onTouchEnd={(e) => { e.preventDefault(); void endGioSession() }}
+            onClick={() => isGioActive ? void endGioSession() : void startGioSession()}
           >
-            {isGioActive ? '🎙 Listening...' : 'Hold to talk to Gio'}
+            {isGioActive ? '🎙 Stop Gio' : 'Talk to Gio'}
           </button>
           {gioError ? <p className="gio-error">{gioError}</p> : null}
         </div>
