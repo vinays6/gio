@@ -123,16 +123,38 @@ export function useGioSession({
       cleaned = cleaned.replace(prefMatch[0], '').trim()
       try {
         const pref = JSON.parse(prefMatch[1].trim()) as { action: string; genre: string; context: string }
-        const label = `${pref.action === 'no' ? 'No' : 'Yes'} ${pref.genre} while ${pref.context}`
+        const newPref = `${pref.action === 'no' ? 'Avoid' : 'Play'} ${pref.genre}${pref.context ? ` during ${pref.context}` : ''}`
         const existing = userPreferences ? userPreferences.trim() : ''
-        const next = existing ? `${existing}\n${label}` : label
-        setPreferences(next)
-          .then(ok => { if (!ok) throw new Error('save returned false') })
-          .catch((err) => {
-            console.error('[Gio] Preference save failed:', err)
-            setGioError('Preference could not be saved')
-            setTimeout(() => setGioError(null), 4000)
-          })
+
+        const mergeAndSave = async () => {
+          let merged: string
+          if (!existing) {
+            merged = newPref
+          } else {
+            const apiKey = getApiKey()
+            if (!apiKey) {
+              merged = `${existing}\n${newPref}`
+            } else {
+              const client = new GoogleGenAI({ apiKey })
+              const response = await client.models.generateContent({
+                model: 'gemini-2.0-flash',
+                contents: [{
+                  role: 'user',
+                  parts: [{ text: `You manage music preferences for a user of an ambient music app. Here are their existing preferences:\n${existing}\n\nThe user just set this new preference (treat it as high priority and let it override any conflicting older preferences):\n${newPref}\n\nMerge these into a clean, concise set of music preferences. Output only the merged result as plain text, one preference per line, no extra commentary.` }],
+                }],
+              })
+              merged = response.text?.trim() ?? `${existing}\n${newPref}`
+            }
+          }
+          const ok = await setPreferences(merged)
+          if (!ok) throw new Error('save returned false')
+        }
+
+        mergeAndSave().catch((err) => {
+          console.error('[Gio] Preference save failed:', err)
+          setGioError('Preference could not be saved')
+          setTimeout(() => setGioError(null), 4000)
+        })
       } catch (err) {
         console.error('[Gio] Preference JSON parse error:', err)
       }
@@ -142,7 +164,7 @@ export function useGioSession({
     cleaned = cleaned.replace(/<<<LOCK_START>>>[\s\S]*?<<<LOCK_END>>>/g, '').trim()
 
     return cleaned
-  }, [userPreferences, setPreferences])
+  }, [userPreferences, setPreferences, getApiKey])
 
   const endGioSession = useCallback(async () => {
     // Always attempt clipboard write first — this runs with a user gesture
