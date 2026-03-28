@@ -297,21 +297,13 @@ export function useDocumentPiP(state: PiPState, actions: PiPActions) {
 
     const micBtn = shell.querySelector<HTMLButtonElement>('.pip-mic-btn')
     if (micBtn) {
-      micBtn.addEventListener('mousedown', (e) => {
+      micBtn.addEventListener('click', (e) => {
         e.stopPropagation()
-        actions.startGioSession()
-      })
-      micBtn.addEventListener('mouseup', (e) => {
-        e.stopPropagation()
-        actions.endGioSession()
-      })
-      micBtn.addEventListener('touchstart', (e) => {
-        e.stopPropagation()
-        actions.startGioSession()
-      })
-      micBtn.addEventListener('touchend', (e) => {
-        e.stopPropagation()
-        actions.endGioSession()
+        if (state.isGioActive) {
+          actions.endGioSession()
+        } else {
+          actions.startGioSession()
+        }
       })
     }
 
