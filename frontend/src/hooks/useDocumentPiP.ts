@@ -406,6 +406,23 @@ export function useDocumentPiP(state: PiPState, actions: PiPActions) {
     }
   }, [isDocumentPiPSupported, state.status, openDocumentPiP])
 
+  // When clipboard content arrives, try to write it via the PiP window's clipboard API.
+  // The PiP window has its own focus context — if the user is working inside it,
+  // the main window's clipboard API will fail, but the PiP window's will succeed.
+  useEffect(() => {
+    const content = state.pendingClipboardWriteRef?.current
+    if (!content) return
+    const pipWindow = pipWindowRef.current
+    if (!pipWindow || pipWindow.closed) return
+
+    pipWindow.navigator.clipboard.writeText(content)
+      .then(() => {
+        if (state.pendingClipboardWriteRef) state.pendingClipboardWriteRef.current = null
+        console.log('[PiP] Clipboard written via PiP window, length:', content.length)
+      })
+      .catch(() => { /* PiP window may not be focused yet; main-window paths will retry */ })
+  }, [state.clipboardContent, state.pendingClipboardWriteRef])
+
   useEffect(() => {
     return () => { closeDocumentPiP() }
   }, [closeDocumentPiP])
