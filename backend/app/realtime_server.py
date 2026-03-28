@@ -525,25 +525,6 @@ async def _handle_live(connection: ServerConnection) -> None:
                 await sess.send_realtime_input(
                     audio=types.Blob(data=pcm, mime_type=mime_type)
                 )
-            elif message_type == "image":
-                image_b64 = data.get("data") or ""
-                mime_type = data.get("mimeType") or "image/jpeg"
-                text = data.get("text") or ""
-                await sess.send_client_content(
-                    turns=types.Content(
-                        role="user",
-                        parts=[
-                            types.Part(
-                                inline_data=types.Blob(
-                                    data=base64.b64decode(image_b64),
-                                    mime_type=mime_type,
-                                )
-                            ),
-                            types.Part(text=text),
-                        ],
-                    ),
-                    turn_complete=False,
-                )
             elif message_type == "text":
                 text = (data.get("text") or "").strip()
                 if text:

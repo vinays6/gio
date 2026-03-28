@@ -16,7 +16,6 @@ function App() {
   })
   const gio = useGioSession({
     fadeVolume: lyria.fadeVolume,
-    latestScreenshot: capture.latestScreenshot,
     onPreferencesUpdated: applyPreferencesUpdate,
     onMusicGenerationUpdated: (patch) => {
       void lyria.applyAssistantUpdate(patch)

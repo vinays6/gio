@@ -1,15 +1,13 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, no-empty */
 import { useState, useRef, useCallback, useEffect } from 'react'
-import { getWebSocketUrl, splitDataUrl } from '../lib/realtime'
+import { getWebSocketUrl } from '../lib/realtime'
 
 export function useGioSession({
   fadeVolume,
-  latestScreenshot,
   onPreferencesUpdated,
   onMusicGenerationUpdated,
 }: {
   fadeVolume: (targetVolume: number, durationMs: number) => void
-  latestScreenshot: string | null
   onPreferencesUpdated?: (preferences: string) => void
   onMusicGenerationUpdated?: (patch: Record<string, unknown>) => void
 }) {
@@ -34,12 +32,7 @@ export function useGioSession({
   const wakeWordTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const connectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isUnmountingRef = useRef(false)
-  const latestScreenshotRef = useRef(latestScreenshot)
   const sentAudioChunkCountRef = useRef(0)
-
-  useEffect(() => {
-    latestScreenshotRef.current = latestScreenshot
-  }, [latestScreenshot])
 
   const appendTranscript = useCallback((text: string) => {
     const trimmed = text.trim()
@@ -76,20 +69,6 @@ export function useGioSession({
     socket.send(JSON.stringify(payload))
     return true
   }, [])
-
-  const sendLatestScreenshot = useCallback(() => {
-    const screenshot = latestScreenshotRef.current
-    if (!screenshot) return
-    const payload = splitDataUrl(screenshot)
-    if (!payload) return
-
-    sendSocketMessage({
-      type: 'image',
-      data: payload.data,
-      mimeType: payload.mimeType,
-      text: 'This is the user\'s current screen. Use it as context if it helps answer or act.',
-    })
-  }, [sendSocketMessage])
 
   const scheduleGioAudioChunk = async (base64Data: string, mimeType?: string) => {
     if (!base64Data) return
@@ -243,7 +222,6 @@ export function useGioSession({
               timeZone: browserTimeZone,
             })
           }
-          sendLatestScreenshot()
           return
         }
 
@@ -384,7 +362,7 @@ export function useGioSession({
         gioMicStreamRef.current = null
       }
     }
-  }, [appendTranscript, fadeVolume, onMusicGenerationUpdated, onPreferencesUpdated, sendLatestScreenshot, sendSocketMessage])
+  }, [appendTranscript, fadeVolume, onMusicGenerationUpdated, onPreferencesUpdated, sendSocketMessage])
 
   const startGioSessionRef = useRef(startGioSession)
   const endGioSessionRef = useRef(endGioSession)
@@ -392,12 +370,6 @@ export function useGioSession({
     startGioSessionRef.current = startGioSession
     endGioSessionRef.current = endGioSession
   }, [startGioSession, endGioSession])
-
-  useEffect(() => {
-    if (isGioActiveRef.current) {
-      sendLatestScreenshot()
-    }
-  }, [latestScreenshot, sendLatestScreenshot])
 
   useEffect(() => {
     const SpeechRecognitionAPI = window.SpeechRecognition ?? window.webkitSpeechRecognition
