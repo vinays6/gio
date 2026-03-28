@@ -31,6 +31,7 @@ export function useGioSession({
   const isGioActiveRef = useRef(false)
   const gioTranscriptRef = useRef('')
   const pendingClipboardWriteRef = useRef<string | null>(null)
+  const lockActivatedRef = useRef(false)
   const wakeWordRecognitionRef = useRef<any>(null)
   const wakeWordTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isUnmountingRef = useRef(false)
@@ -99,6 +100,16 @@ export function useGioSession({
     gioNextPlaybackTimeRef.current = startAt + audioBuffer.duration
   }
 
+  const stripTagsForDisplay = (text: string): string => {
+    // Strip complete tag blocks
+    let t = text
+      .replace(/<<<PREFERENCE_START>>>[\s\S]*?<<<PREFERENCE_END>>>/g, '')
+      .replace(/<<<LOCK_START>>>[\s\S]*?<<<LOCK_END>>>/g, '')
+    // Strip any partially-streamed block still coming in
+    t = t.replace(/<<<(?:PREFERENCE|LOCK)[\s\S]*$/, '')
+    return t.trimEnd()
+  }
+
   const processSessionTags = useCallback((transcript: string): string => {
     let cleaned = transcript
 
@@ -131,20 +142,11 @@ export function useGioSession({
       }
     }
 
-    // Scan B — LOCK tags
-    const lockMatch = cleaned.match(/<<<LOCK_START>>>([\s\S]*?)<<<LOCK_END>>>/)
-    if (lockMatch) {
-      cleaned = cleaned.replace(lockMatch[0], '').trim()
-      try {
-        const lock = JSON.parse(lockMatch[1].trim()) as { prompt: string; minutes: number }
-        activateLock(lock.prompt, Math.min(60, Math.max(1, lock.minutes ?? 5)))
-      } catch (err) {
-        console.error('[Gio] Lock JSON parse error:', err)
-      }
-    }
+    // Scan B — LOCK tags (already activated in real-time; just strip from final transcript)
+    cleaned = cleaned.replace(/<<<LOCK_START>>>[\s\S]*?<<<LOCK_END>>>/g, '').trim()
 
     return cleaned
-  }, [activateLock])
+  }, [])
 
   const endGioSession = useCallback(async () => {
     // Always attempt clipboard write first — this runs with a user gesture
@@ -202,6 +204,7 @@ export function useGioSession({
 
     gioTranscriptRef.current = ''
     pendingClipboardWriteRef.current = null
+    lockActivatedRef.current = false
     setGioTranscript('')
     setGioError(null)
     setClipboardContent(null)
@@ -253,11 +256,33 @@ export function useGioSession({
               }
             }
             if (textChunks.length > 0) {
-              const chunk = textChunks.join('\n')
-              const prev = gioTranscriptRef.current
-              const next = prev && !prev.endsWith('\n') ? prev + '\n' + chunk : prev + chunk
+              const chunk = textChunks.join('')
+              const next = gioTranscriptRef.current + chunk
               gioTranscriptRef.current = next
-              setGioTranscript(next)
+              setGioTranscript(stripTagsForDisplay(next))
+
+              // Activate LOCK immediately as soon as the complete block appears
+              if (!lockActivatedRef.current) {
+                const lockMatch = next.match(/<<<LOCK_START>>>([\s\S]*?)<<<LOCK_END>>>/)
+                if (lockMatch) {
+                  lockActivatedRef.current = true
+                  try {
+                    const lock = JSON.parse(lockMatch[1].trim()) as { prompt: string; minutes: number }
+                    activateLock(lock.prompt, Math.min(60, Math.max(1, lock.minutes ?? 5)))
+                  } catch (err) {
+                    console.error('[Gio] Lock JSON parse error:', err)
+                  }
+                }
+              }
+            }
+
+            // Add newline between turns, not between streaming chunks
+            const turnComplete = (msg as any).serverContent?.turnComplete === true
+            if (turnComplete && gioTranscriptRef.current && !gioTranscriptRef.current.endsWith('\n')) {
+              const next = gioTranscriptRef.current + '\n'
+              gioTranscriptRef.current = next
+              setGioTranscript(stripTagsForDisplay(next))
+              lockActivatedRef.current = false
             }
 
             const calls = (msg as any).toolCall?.functionCalls ?? []
