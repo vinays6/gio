@@ -49,12 +49,24 @@ function App() {
   const [error, setError] = useState('')
   const [pipMessage, setPipMessage] = useState('')
 
+  // Screenshot capture state
+  const [captureOn, setCaptureOn] = useState(false)
+  const [latestScreenshot, setLatestScreenshot] = useState<string | null>(null)
+  const [captureStatus, setCaptureStatus] = useState('Not capturing')
+  const [showScreenshotInPip, setShowScreenshotInPip] = useState(false)
+
   const sessionRef = useRef<LiveMusicSession | null>(null)
   const lastAppliedConfigRef = useRef<LiveMusicGenerationConfig | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const nextPlaybackTimeRef = useRef(0)
   const isUnmountingRef = useRef(false)
   const pipWindowRef = useRef<Window | null>(null)
+
+  // Screenshot capture refs
+  const videoRef = useRef<HTMLVideoElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const captureStreamRef = useRef<MediaStream | null>(null)
+  const captureIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const isDocumentPiPSupported =
     typeof window !== 'undefined' && 'documentPictureInPicture' in window
@@ -76,6 +88,70 @@ function App() {
       ? MusicGenerationMode.VOCALIZATION
       : MusicGenerationMode.QUALITY,
   })
+
+  const stopCapture = () => {
+    if (captureIntervalRef.current) {
+      clearInterval(captureIntervalRef.current)
+      captureIntervalRef.current = null
+    }
+    if (captureStreamRef.current) {
+      captureStreamRef.current.getTracks().forEach(t => t.stop())
+      captureStreamRef.current = null
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null
+    }
+    setLatestScreenshot(null)
+    setCaptureStatus('Not capturing')
+    setCaptureOn(false)
+    setShowScreenshotInPip(false)
+  }
+
+  const startCapture = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getDisplayMedia({ video: true })
+      captureStreamRef.current = stream
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream
+        await videoRef.current.play()
+      }
+
+      stream.getTracks().forEach(track => {
+        track.onended = () => {
+          stopCapture()
+        }
+      })
+
+      captureIntervalRef.current = setInterval(() => {
+        const video = videoRef.current
+        const canvas = canvasRef.current
+        if (!video || !canvas) return
+        const ctx = canvas.getContext('2d')
+        if (!ctx) return
+        ctx.drawImage(video, 0, 0, 1280, 720)
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.7)
+        setLatestScreenshot(dataUrl)
+        const timeStr = new Date().toLocaleTimeString()
+        setCaptureStatus(`Capturing every 10s — last captured at ${timeStr}`)
+        console.log('[Screenshot] Captured at ' + timeStr + ', base64 length: ' + dataUrl.length)
+      }, 10000)
+
+      setCaptureOn(true)
+      setCaptureStatus('Capturing every 10s — waiting for first capture...')
+    } catch {
+      setCaptureOn(false)
+      setCaptureStatus('Screen share was denied or cancelled')
+    }
+  }
+
+  const toggleCapture = async () => {
+    if (captureOn) {
+      stopCapture()
+    } else {
+      await startCapture()
+    }
+  }
 
   const stopStream = async (nextStatus: Exclude<StreamStatus, 'connecting'> | null = 'idle') => {
     const currentSession = sessionRef.current
@@ -210,6 +286,47 @@ function App() {
         opacity: 0.5;
         cursor: not-allowed;
       }
+
+      .pip-last-activity {
+        width: 100%;
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        color: #e2e8f0;
+      }
+
+      .pip-last-activity:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+
+      .pip-screenshot-panel {
+        display: grid;
+        gap: 8px;
+      }
+
+      .pip-screenshot-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+      }
+
+      .pip-screenshot-dismiss {
+        background: rgba(255, 255, 255, 0.1);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        color: #e2e8f0;
+        border-radius: 8px;
+        padding: 4px 10px;
+        font-size: 0.75rem;
+        cursor: pointer;
+      }
+
+      .pip-screenshot-img {
+        width: 100%;
+        border-radius: 12px;
+        object-fit: contain;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        display: block;
+      }
     `
 
     const isPlayable = status === 'paused' || status === 'stopped' || status === 'idle'
@@ -221,6 +338,18 @@ function App() {
     shell.innerHTML = `
       <h1 class="pip-title">Lyria controls</h1>
       <span class="pip-status ${status}">${status}</span>
+      ${
+        showScreenshotInPip && latestScreenshot
+          ? `<div class="pip-screenshot-panel">
+               <div class="pip-screenshot-header">
+                 <p class="pip-meta">Last captured activity</p>
+                 <button class="pip-screenshot-dismiss" type="button">✕ Close</button>
+               </div>
+               <img class="pip-screenshot-img" src="${latestScreenshot}" alt="Last captured activity" />
+             </div>`
+          : ''
+      }
+      <button class="pip-last-activity" type="button"${latestScreenshot ? '' : ' disabled'}>Last activity</button>
       <div class="pip-actions">
         <button class="pip-primary" type="button" ${status === 'connecting' ? 'disabled' : ''}>
           ${playPauseLabel}
@@ -250,6 +379,16 @@ function App() {
 
     shell.querySelector<HTMLButtonElement>('.pip-secondary')?.addEventListener('click', () => {
       void toggleVocals()
+    })
+
+    shell.querySelector<HTMLButtonElement>('.pip-last-activity')?.addEventListener('click', () => {
+      if (latestScreenshot) {
+        setShowScreenshotInPip(true)
+      }
+    })
+
+    shell.querySelector<HTMLButtonElement>('.pip-screenshot-dismiss')?.addEventListener('click', () => {
+      setShowScreenshotInPip(false)
     })
   }
 
@@ -292,13 +431,14 @@ function App() {
     return () => {
       isUnmountingRef.current = true
       closeDocumentPiP()
+      stopCapture()
       void stopStream(null)
     }
   }, [])
 
   useEffect(() => {
     updatePiPContents()
-  }, [brightness, bpm, density, error, onlyBassAndDrums, status, vocalsEnabled])
+  }, [brightness, bpm, density, error, onlyBassAndDrums, status, vocalsEnabled, latestScreenshot, showScreenshotInPip])
 
   useEffect(() => {
     if (!isDocumentPiPSupported) {
@@ -668,6 +808,16 @@ function App() {
           </button>
         </div>
 
+        <div className="capture-row">
+          <button
+            className={captureOn ? 'primary-button capture-toggle' : 'secondary-button capture-toggle'}
+            onClick={() => void toggleCapture()}
+          >
+            {captureOn ? 'Turn me off' : 'Turn me on'}
+          </button>
+          <p className="capture-status">{captureStatus}</p>
+        </div>
+
         <p className="helper-copy">
           Use `VITE_GEMINI_API_KEY` in your local environment. When supported, the app
           will try to move into Document Picture-in-Picture if you switch away while
@@ -770,6 +920,10 @@ function App() {
           </button>
         </section>
       </section>
+
+      {/* Hidden elements for screen capture — never visible to user */}
+      <video ref={videoRef} style={{ display: 'none' }} muted playsInline />
+      <canvas ref={canvasRef} width={1280} height={720} style={{ display: 'none' }} />
     </main>
   )
 }
