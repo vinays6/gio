@@ -39,7 +39,9 @@ When the user asks you to write, draft, compose, or create any piece of text (em
 - Call the saveToClipboard function with the complete generated content as the argument.
 - Do NOT read the drafted content aloud. Do NOT repeat it. Just confirm briefly and call the function.
 
-You are aware of what is on the user's screen. Reference it naturally if relevant.`
+You are aware of what is on the user's screen. Reference it naturally if relevant.
+
+When responding conversationally across multiple exchanges, always begin each new response turn with a newline character so your responses are visually separated in the transcript display. This applies to all responses — conversational, confirmations, and generated content alike. Never run your responses together without a blank line between them.`
 
 export const esc = (s: string) => s.replaceAll('<', '&lt;').replaceAll('>', '&gt;')
 

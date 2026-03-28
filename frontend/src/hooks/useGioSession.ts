@@ -204,7 +204,9 @@ export function useGioSession({
               }
             }
             if (textChunks.length > 0) {
-              const next = gioTranscriptRef.current + textChunks.join('')
+              const chunk = textChunks.join('\n')
+              const prev = gioTranscriptRef.current
+              const next = prev && !prev.endsWith('\n') ? prev + '\n' + chunk : prev + chunk
               gioTranscriptRef.current = next
               setGioTranscript(next)
             }

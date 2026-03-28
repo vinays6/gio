@@ -271,6 +271,7 @@ body { margin: 0; }
   overflow-y: auto;
   font-size: 13px;
   line-height: 1.5;
+  white-space: pre-wrap;
   color: var(--text-muted);
   -webkit-mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
   mask-image: linear-gradient(to bottom, black 60%, transparent 100%);

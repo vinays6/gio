@@ -168,7 +168,7 @@ export function useDocumentPiP(state: PiPState, actions: PiPActions) {
       @keyframes eqB3 { 0%,100%{height:6px} 50%{height:12px} }
       .pip-transcript {
         max-height: 80px; overflow-y: auto; font-size: 12px;
-        line-height: 1.5; color: rgba(240,240,240,0.65);
+        line-height: 1.5; white-space: pre-wrap; color: rgba(240,240,240,0.65);
         -webkit-mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
         mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
       }
