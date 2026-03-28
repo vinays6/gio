@@ -54,6 +54,8 @@ export function useLyriaStream() {
   const lyriaVolumeRef = useRef(1.0)
   const isUnmountingRef = useRef(false)
   const connectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const playbackEpochRef = useRef(0)
+  const acceptIncomingAudioRef = useRef(false)
 
   const getConfigSummary = useCallback((): MusicGenerationConfig => {
     const config: MusicGenerationConfig = {
@@ -150,11 +152,37 @@ export function useLyriaStream() {
     return sampleRateMatch ? Number(sampleRateMatch[1]) : SAMPLE_RATE
   }
 
-  const schedulePcm16Chunk = useCallback(async (base64Data: string, mimeType?: string) => {
+  const clearPlaybackBuffer = useCallback(async () => {
+    nextPlaybackTimeRef.current = 0
+    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+      await audioContextRef.current.close()
+    }
+    audioContextRef.current = null
+    masterGainRef.current = null
+    analyserRef.current = null
+  }, [])
+
+  const beginPlaybackSession = useCallback(async () => {
+    playbackEpochRef.current += 1
+    acceptIncomingAudioRef.current = true
+    await ensureAudioContext()
+    resetPlaybackQueue()
+  }, [ensureAudioContext, resetPlaybackQueue])
+
+  const schedulePcm16Chunk = useCallback(async (base64Data: string, expectedEpoch: number, mimeType?: string) => {
+    if (!acceptIncomingAudioRef.current || expectedEpoch !== playbackEpochRef.current) return
+
     const chunkSampleRate = getSampleRateFromMimeType(mimeType)
     const audioContext = audioContextRef.current && audioContextRef.current.sampleRate === chunkSampleRate
       ? await ensureAudioContext()
       : new AudioContext({ sampleRate: chunkSampleRate })
+
+    if (!acceptIncomingAudioRef.current || expectedEpoch !== playbackEpochRef.current) {
+      if (audioContext !== audioContextRef.current && audioContext.state !== 'closed') {
+        await audioContext.close()
+      }
+      return
+    }
 
     if (audioContextRef.current && audioContextRef.current !== audioContext && audioContextRef.current.state !== 'closed') {
       await audioContextRef.current.close()
@@ -193,6 +221,11 @@ export function useLyriaStream() {
     source.buffer = audioBuffer
     source.connect(masterGain)
 
+    if (!acceptIncomingAudioRef.current || expectedEpoch !== playbackEpochRef.current) {
+      source.disconnect()
+      return
+    }
+
     const startAt = Math.max(audioContext.currentTime + 0.05, nextPlaybackTimeRef.current)
     source.start(startAt)
     nextPlaybackTimeRef.current = startAt + audioBuffer.duration
@@ -202,6 +235,8 @@ export function useLyriaStream() {
     const currentSocket = socketRef.current
     socketRef.current = null
     lastAppliedConfigRef.current = null
+    acceptIncomingAudioRef.current = false
+    playbackEpochRef.current += 1
     if (connectTimeoutRef.current) {
       clearTimeout(connectTimeoutRef.current)
       connectTimeoutRef.current = null
@@ -212,17 +247,10 @@ export function useLyriaStream() {
     }
     currentSocket?.close()
 
-    nextPlaybackTimeRef.current = 0
-
-    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
-      await audioContextRef.current.close()
-    }
-    audioContextRef.current = null
-    masterGainRef.current = null
-    analyserRef.current = null
+    await clearPlaybackBuffer()
 
     if (!isUnmountingRef.current && nextStatus) setStatus(nextStatus)
-  }, [])
+  }, [clearPlaybackBuffer])
 
   const startStream = useCallback(async () => {
     setError('')
@@ -231,8 +259,7 @@ export function useLyriaStream() {
 
     try {
       await stopStream(null)
-      await ensureAudioContext()
-      resetPlaybackQueue()
+      await beginPlaybackSession()
 
       const socketUrl = getWebSocketUrl('/api/lyria')
       console.info('[Lyria] Connecting to', socketUrl)
@@ -295,7 +322,9 @@ export function useLyriaStream() {
         }
 
         if (message.type === 'audio' && message.data) {
-          void schedulePcm16Chunk(message.data, message.mimeType)
+          if (acceptIncomingAudioRef.current) {
+            void schedulePcm16Chunk(message.data, playbackEpochRef.current, message.mimeType)
+          }
           return
         }
 
@@ -328,7 +357,7 @@ export function useLyriaStream() {
       setStatus('error')
       await stopStream(null)
     }
-  }, [ensureAudioContext, getConfigSummary, getEffectivePrompt, prompt, resetPlaybackQueue, schedulePcm16Chunk, stopStream])
+  }, [beginPlaybackSession, getConfigSummary, getEffectivePrompt, prompt, resetPlaybackQueue, schedulePcm16Chunk, stopStream])
 
   const playStream = useCallback(async () => {
     try {
@@ -337,7 +366,7 @@ export function useLyriaStream() {
         await startStream()
         return
       }
-      await ensureAudioContext()
+      await beginPlaybackSession()
       sendSocketMessage({ type: 'play' })
       setStatus('streaming')
     } catch (playError) {
@@ -345,22 +374,22 @@ export function useLyriaStream() {
       setError(nextError)
       setStatus('error')
     }
-  }, [ensureAudioContext, sendSocketMessage, startStream])
+  }, [beginPlaybackSession, sendSocketMessage, startStream])
 
   const pauseStream = useCallback(async () => {
     if (!socketRef.current || socketRef.current.readyState !== WebSocket.OPEN) return
     try {
+      acceptIncomingAudioRef.current = false
+      playbackEpochRef.current += 1
       sendSocketMessage({ type: 'pause' })
-      if (audioContextRef.current?.state === 'running') {
-        await audioContextRef.current.suspend()
-      }
+      await clearPlaybackBuffer()
       setStatus('paused')
     } catch (pauseError) {
       const nextError = pauseError instanceof Error ? pauseError.message : 'Unable to pause playback.'
       setError(nextError)
       setStatus('error')
     }
-  }, [sendSocketMessage])
+  }, [clearPlaybackBuffer, sendSocketMessage])
 
   const toggleVocals = useCallback(async () => {
     const nextVocalsEnabled = !vocalsEnabled
