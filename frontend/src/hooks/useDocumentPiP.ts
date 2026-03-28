@@ -14,6 +14,7 @@ export interface PiPState {
   clipboardContent: string | null
   gioError: string | null
   pendingClipboardWriteRef?: React.MutableRefObject<string | null>
+  analyserRef?: React.RefObject<AnalyserNode | null>
 }
 
 export interface PiPActions {
@@ -29,6 +30,7 @@ export function useDocumentPiP(state: PiPState, actions: PiPActions) {
   const [pipMessage, setPipMessage] = useState('')
   const pipWindowRef = useRef<Window | null>(null)
   const showDebugRef = useRef(false)
+  const pipRafRef = useRef<number | null>(null)
 
   const isDocumentPiPSupported = typeof window !== 'undefined' && 'documentPictureInPicture' in window
 
@@ -42,6 +44,12 @@ export function useDocumentPiP(state: PiPState, actions: PiPActions) {
     if (!pipWindow || pipWindow.closed) {
       pipWindowRef.current = null
       return
+    }
+
+    // Cancel any running animation loop before rebuilding the DOM
+    if (pipRafRef.current !== null) {
+      cancelAnimationFrame(pipRafRef.current)
+      pipRafRef.current = null
     }
 
     pipWindow.document.title = 'Gio'
@@ -63,12 +71,28 @@ export function useDocumentPiP(state: PiPState, actions: PiPActions) {
         min-height: 100vh;
       }
       .pip-header {
-        height: 36px; display: flex; align-items: center; justify-content: center;
+        display: flex; flex-direction: column;
         background: linear-gradient(90deg, #34A853, #FBBC05, #EA4335);
         flex-shrink: 0;
       }
-      .pip-header-title {
-        font-size: 16px; font-weight: 700; color: #fff; letter-spacing: 0.12em;
+      .pip-viz-canvas {
+        display: block; width: 100%; height: 44px;
+      }
+      .pip-header-logo-row {
+        height: 36px; display: flex; align-items: center; justify-content: center;
+      }
+      .pip-glass-logo {
+        font-size: 15px; font-weight: 800; letter-spacing: 0.22em;
+        color: #fff;
+        padding: 3px 16px 3px 20px;
+        background: rgba(255,255,255,0.18);
+        border: 1px solid rgba(255,255,255,0.45);
+        border-radius: 7px;
+        box-shadow:
+          0 1px 0 rgba(255,255,255,0.4) inset,
+          0 -1px 0 rgba(0,0,0,0.08) inset,
+          0 3px 12px rgba(0,0,0,0.18);
+        text-shadow: 0 1px 3px rgba(0,0,0,0.3);
       }
       .pip-section {
         padding: 12px;
@@ -205,7 +229,10 @@ export function useDocumentPiP(state: PiPState, actions: PiPActions) {
 
     shell.innerHTML = `
       <div class="pip-header">
-        <span class="pip-header-title">GIO</span>
+        <canvas id="pip-viz" class="pip-viz-canvas" width="300" height="44"></canvas>
+        <div class="pip-header-logo-row">
+          <span class="pip-glass-logo">GIO</span>
+        </div>
       </div>
 
       <div class="pip-section">
@@ -283,6 +310,47 @@ export function useDocumentPiP(state: PiPState, actions: PiPActions) {
         inner.classList.add('scrolling')
       }
     }, 50)
+
+    // Visualizer animation loop
+    const vizCanvas = shell.querySelector<HTMLCanvasElement>('#pip-viz')
+    if (vizCanvas) {
+      vizCanvas.width = pipWindow.innerWidth || 300
+      const ctx2d = vizCanvas.getContext('2d')
+      if (ctx2d) {
+        const BAR_COUNT = 32
+        const dataArr = new Uint8Array(BAR_COUNT)
+        let t = 0
+        const drawViz = () => {
+          if (!pipWindowRef.current || pipWindowRef.current.closed) return
+          pipRafRef.current = requestAnimationFrame(drawViz)
+          const w = vizCanvas.width
+          const h = vizCanvas.height
+          ctx2d.clearRect(0, 0, w, h)
+          const analyser = state.analyserRef?.current
+          if (analyser && state.status === 'streaming') {
+            analyser.getByteFrequencyData(dataArr)
+          }
+          const barW = w / BAR_COUNT
+          for (let i = 0; i < BAR_COUNT; i++) {
+            let norm: number
+            if (analyser && state.status === 'streaming') {
+              norm = (dataArr[i] ?? 0) / 255
+            } else {
+              norm = 0.1 + 0.08 * Math.sin(t * 2 + i * 0.4) + 0.04 * Math.sin(t * 3.1 + i * 0.7)
+            }
+            const barH = Math.max(2, norm * h)
+            const x = i * barW
+            ctx2d.fillStyle = 'rgba(255,255,255,0.55)'
+            ctx2d.beginPath()
+            ;(ctx2d as any).roundRect?.(x + 1, h - barH, Math.max(1, barW - 2), barH, 2)
+              ?? ctx2d.rect(x + 1, h - barH, Math.max(1, barW - 2), barH)
+            ctx2d.fill()
+          }
+          t += 0.016
+        }
+        drawViz()
+      }
+    }
 
     // ── Event listeners (with stopPropagation on all buttons) ──
 
@@ -370,7 +438,13 @@ export function useDocumentPiP(state: PiPState, actions: PiPActions) {
       })
       pipWindowRef.current = pipWindow
       setPipMessage('')
-      pipWindow.addEventListener('pagehide', () => { pipWindowRef.current = null })
+      pipWindow.addEventListener('pagehide', () => {
+        pipWindowRef.current = null
+        if (pipRafRef.current !== null) {
+          cancelAnimationFrame(pipRafRef.current)
+          pipRafRef.current = null
+        }
+      })
 
       // BUG FIX: removed the { capture: true } document-level click listener
       // that was intercepting play button clicks and causing unexpected PiP closure.
@@ -424,7 +498,10 @@ export function useDocumentPiP(state: PiPState, actions: PiPActions) {
   }, [state.clipboardContent, state.pendingClipboardWriteRef])
 
   useEffect(() => {
-    return () => { closeDocumentPiP() }
+    return () => {
+      if (pipRafRef.current !== null) cancelAnimationFrame(pipRafRef.current)
+      closeDocumentPiP()
+    }
   }, [closeDocumentPiP])
 
   return { isDocumentPiPSupported, pipMessage, openDocumentPiP, closeDocumentPiP }

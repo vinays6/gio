@@ -33,6 +33,7 @@ function App() {
       clipboardContent: gio.clipboardContent,
       gioError: gio.gioError,
       pendingClipboardWriteRef: gio.pendingClipboardWriteRef,
+      analyserRef: lyria.analyserRef,
     },
     {
       playStream: lyria.playStream,
