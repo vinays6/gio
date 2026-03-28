@@ -49,14 +49,9 @@ Answer questions, help with tasks, give information. Keep answers concise unless
 
 MODE 2 — Content generation (emails, messages, documents, lists)
 When the user asks you to write, draft, compose, or create any piece of text (emails, Slack messages, to-do lists, summaries, etc.):
-- Generate the complete content
-- At the very end of your response, output a special block in EXACTLY this format:
-
-<<<CLIPBOARD_START>>>
-[the complete generated content, ready to paste, nothing else]
-<<<CLIPBOARD_END>>>
-
-This block will be automatically detected and copied to the user's clipboard. Only include this block when you have generated a complete piece of copyable content. Never include it for conversational responses.
+- Speak a brief confirmation only, e.g. "Done, I've drafted that and copied it to your clipboard."
+- Call the saveToClipboard function with the complete generated content as the argument.
+- Do NOT read the drafted content aloud. Do NOT repeat it. Just confirm briefly and call the function.
 
 You are aware of what is on the user's screen. Reference it naturally if relevant.`
 
@@ -418,38 +413,8 @@ function App() {
 
   // ─── Gio clipboard processing ─────────────────────────────────────────────
 
-  const processGioTranscript = async (rawTranscript: string): Promise<string> => {
-    const match = rawTranscript.match(/<<<CLIPBOARD_START>>>([\s\S]*?)<<<CLIPBOARD_END>>>/)
-    if (!match) return rawTranscript
-
-    const content = match[1].trim()
-    setClipboardContent(content)
-
-    try {
-      if (navigator.clipboard) {
-        await navigator.clipboard.writeText(content)
-        console.log('[Gio] Copied to clipboard, length:', content.length)
-      } else {
-        // Fallback: textarea execCommand (works without document focus)
-        const ta = document.createElement('textarea')
-        ta.value = content
-        ta.style.position = 'fixed'
-        ta.style.opacity = '0'
-        document.body.appendChild(ta)
-        ta.focus()
-        ta.select()
-        document.execCommand('copy')
-        document.body.removeChild(ta)
-        console.log('[Gio] Copied to clipboard via fallback, length:', content.length)
-      }
-    } catch (err) {
-      console.warn('[Gio] Clipboard write failed:', err)
-    }
-
-    return rawTranscript
-      .replace(/<<<CLIPBOARD_START>>>[\s\S]*?<<<CLIPBOARD_END>>>/, '')
-      .trim()
-  }
+  // Kept for potential future use; clipboard is now handled via saveToClipboard function call
+  const processGioTranscript = (rawTranscript: string): string => rawTranscript
 
   // ─── Gio session lifecycle ────────────────────────────────────────────────
 
@@ -461,7 +426,6 @@ function App() {
 
     // Reset per-session state
     gioTranscriptRef.current = ''
-    clipboardProcessedRef.current = false
     setGioTranscript('')
     setGioError(null)
     setClipboardContent(null)
@@ -484,16 +448,30 @@ function App() {
         config: {
           responseModalities: [Modality.AUDIO],
           systemInstruction: GIO_SYSTEM_PROMPT,
+          tools: [{
+            functionDeclarations: [{
+              name: 'saveToClipboard',
+              description: 'Saves drafted or generated text content directly to the user\'s clipboard. Call this whenever you have composed a complete piece of content the user asked you to write.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  content: {
+                    type: 'string',
+                    description: 'The complete text content to copy to the clipboard, ready to paste.',
+                  },
+                },
+                required: ['content'],
+              },
+            }],
+          }],
         },
         callbacks: {
           onmessage: (msg) => {
-            // Collect text from every possible location the SDK may place it
+            // ── text / transcription ──────────────────────────────────────────
             const textChunks: string[] = []
             if (msg.text) textChunks.push(msg.text)
-            // outputTranscription (audio-mode transcription)
             const transcription = (msg as any).serverContent?.outputTranscription?.text
             if (transcription) textChunks.push(transcription)
-            // inline text parts
             const parts = msg.serverContent?.modelTurn?.parts ?? []
             for (const part of parts) {
               if ((part as any).text) textChunks.push((part as any).text)
@@ -502,17 +480,33 @@ function App() {
               }
             }
             if (textChunks.length > 0) {
-              const chunk = textChunks.join('')
-              const next = gioTranscriptRef.current + chunk
+              const next = gioTranscriptRef.current + textChunks.join('')
               gioTranscriptRef.current = next
               setGioTranscript(next)
-              // Trigger clipboard detection as soon as closing marker arrives
-              if (next.includes('<<<CLIPBOARD_END>>>') && !clipboardProcessedRef.current) {
-                clipboardProcessedRef.current = true
-                void processGioTranscript(next).then(clean => {
-                  gioTranscriptRef.current = clean
-                  setGioTranscript(clean)
-                })
+            }
+
+            // ── function calls (saveToClipboard) ─────────────────────────────
+            const calls = (msg as any).toolCall?.functionCalls ?? []
+            for (const call of calls) {
+              if (call.name === 'saveToClipboard') {
+                const content: string = call.args?.content ?? ''
+                if (content) {
+                  setClipboardContent(content)
+                  // Actual clipboard write is handled in the useEffect watching clipboardContent
+                  console.log('[Gio] saveToClipboard called, length:', content.length)
+                }
+                // Acknowledge the tool call so the model can continue
+                try {
+                  gioSessionRef.current?.sendToolResponse({
+                    functionResponses: [{
+                      id: call.id,
+                      name: call.name,
+                      response: { output: { success: true } },
+                    }],
+                  })
+                } catch (e) {
+                  console.warn('[Gio] Tool response send failed:', e)
+                }
               }
             }
           },
@@ -639,16 +633,6 @@ function App() {
     }
 
     fadeVolume(1.0, 800)
-
-    // Clipboard detection on final transcript
-    const rawTranscript = gioTranscriptRef.current
-    if (rawTranscript) {
-      const cleanTranscript = await processGioTranscript(rawTranscript)
-      if (cleanTranscript !== rawTranscript) {
-        gioTranscriptRef.current = cleanTranscript
-        setGioTranscript(cleanTranscript)
-      }
-    }
   }
 
   // Keep refs current each render
@@ -969,8 +953,16 @@ function App() {
       }
       .pip-gio-clipboard-copy {
         background: rgba(52,211,153,0.12); border: 1px solid rgba(52,211,153,0.22) !important;
-        color: #6ee7b7; font-size: 0.72rem; padding: 6px 10px;
+        color: #6ee7b7; font-size: 0.72rem; padding: 6px 12px;
         border-radius: 8px; cursor: pointer; font-weight: 700;
+        transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+      }
+      .pip-gio-clipboard-copy:hover {
+        background: rgba(52,211,153,0.22); border-color: rgba(52,211,153,0.45) !important;
+      }
+      .pip-gio-clipboard-copy.copied {
+        background: rgba(52,211,153,0.3) !important; border-color: #34d399 !important;
+        color: #fff; cursor: default;
       }
       .pip-gio-error { margin: 0; font-size: 0.74rem; color: #fca5a5; }
       .pip-gio-btn {
@@ -1069,11 +1061,11 @@ function App() {
       gioClipboardHtml = `
         <div class="pip-gio-clipboard">
           <div class="pip-gio-clipboard-header">
-            <span class="pip-gio-clipboard-label">✓ Copied to clipboard</span>
+            <span class="pip-gio-clipboard-label">📋 Clipboard ready</span>
             <button class="pip-gio-clipboard-dismiss" type="button">×</button>
           </div>
           <p class="pip-gio-clipboard-preview">${esc(preview)}</p>
-          <button class="pip-gio-clipboard-copy" type="button">Copy again</button>
+          <button class="pip-gio-clipboard-copy" type="button">Copy</button>
         </div>`
     }
     const gioErrorHtml = gioError
@@ -1151,37 +1143,56 @@ function App() {
       })
     }
 
-    shell.querySelector<HTMLButtonElement>('.pip-gio-clipboard-copy')?.addEventListener('click', () => {
-      // Always get fresh clipboard content and use a robust fallback
-      if (clipboardContent) {
-        // Try the window's clipboard, fallback to textarea if not available
-        if (pipWindow.navigator && pipWindow.navigator.clipboard && typeof pipWindow.navigator.clipboard.writeText === 'function') {
-          pipWindow.navigator.clipboard.writeText(clipboardContent).catch(err => {
-            console.warn('[Gio] Re-copy failed, will fallback:', err)
-            fallbackCopyPiP(clipboardContent)
-          })
-        } else {
-          fallbackCopyPiP(clipboardContent)
-        }
-      }
-    })
+    const copyBtn = shell.querySelector<HTMLButtonElement>('.pip-gio-clipboard-copy')
+    if (copyBtn) {
+      copyBtn.addEventListener('click', () => {
+        if (!clipboardContent) return
 
-    // Helper function: fallback copy inside PiP document
-    function fallbackCopyPiP(text) {
-      try {
-        const ta = pipWindow.document.createElement('textarea')
-        ta.value = text
-        ta.style.position = 'fixed'
-        ta.style.opacity = '0'
-        pipWindow.document.body.appendChild(ta)
-        ta.focus()
-        ta.select()
-        pipWindow.document.execCommand('copy')
-        pipWindow.document.body.removeChild(ta)
-        console.log('[Gio] Fallback re-copy in PiP, length:', text.length)
-      } catch (err) {
-        console.warn('[Gio] Fallback failed in PiP:', err)
-      }
+        const showSuccess = () => {
+          copyBtn.textContent = '✓ Copied!'
+          copyBtn.classList.add('copied')
+          copyBtn.disabled = true
+          setTimeout(() => {
+            copyBtn.textContent = 'Copy'
+            copyBtn.classList.remove('copied')
+            copyBtn.disabled = false
+          }, 2000)
+        }
+
+        // PiP window is focused on click — this will always succeed
+        if (pipWindow.navigator?.clipboard) {
+          pipWindow.navigator.clipboard.writeText(clipboardContent)
+            .then(showSuccess)
+            .catch(() => {
+              // execCommand fallback inside PiP
+              try {
+                const ta = pipWindow.document.createElement('textarea')
+                ta.value = clipboardContent
+                ta.style.cssText = 'position:fixed;opacity:0;pointer-events:none'
+                pipWindow.document.body.appendChild(ta)
+                ta.focus(); ta.select()
+                pipWindow.document.execCommand('copy')
+                pipWindow.document.body.removeChild(ta)
+                showSuccess()
+              } catch (err) {
+                console.warn('[Gio] Copy failed in PiP:', err)
+              }
+            })
+        } else {
+          try {
+            const ta = pipWindow.document.createElement('textarea')
+            ta.value = clipboardContent
+            ta.style.cssText = 'position:fixed;opacity:0;pointer-events:none'
+            pipWindow.document.body.appendChild(ta)
+            ta.focus(); ta.select()
+            pipWindow.document.execCommand('copy')
+            pipWindow.document.body.removeChild(ta)
+            showSuccess()
+          } catch (err) {
+            console.warn('[Gio] Copy fallback failed in PiP:', err)
+          }
+        }
+      })
     }
 
     shell.querySelector<HTMLButtonElement>('.pip-gio-clipboard-dismiss')?.addEventListener('click', () => {
@@ -1267,6 +1278,44 @@ function App() {
     currentMusicPrompt, latestScreenshot, lastDetectedActivity, lastGeminiDecision, lastAnalysisTime,
     isGioActive, gioTranscript, clipboardContent, gioError,
   ])
+
+  // Auto-copy clipboard content whenever Gio sets it via saveToClipboard function call.
+  // We try the PiP window first (it's likely focused), then the main window.
+  // Both attempts are made outside the WebSocket callback where user-gesture rules apply.
+  useEffect(() => {
+    if (!clipboardContent) return
+    const tryWrite = async (win: Window) => {
+      try {
+        if (win.navigator?.clipboard) {
+          await win.navigator.clipboard.writeText(clipboardContent)
+          console.log('[Gio] Auto-copy succeeded via', win === window ? 'main' : 'PiP', 'window')
+          return true
+        }
+      } catch { /* fall through */ }
+      // execCommand fallback (works when the window is focused)
+      try {
+        const ta = win.document.createElement('textarea')
+        ta.value = clipboardContent
+        ta.style.cssText = 'position:fixed;opacity:0;pointer-events:none'
+        win.document.body.appendChild(ta)
+        ta.focus(); ta.select()
+        const ok = win.document.execCommand('copy')
+        win.document.body.removeChild(ta)
+        if (ok) {
+          console.log('[Gio] Auto-copy succeeded via execCommand in', win === window ? 'main' : 'PiP')
+          return true
+        }
+      } catch { /* ignore */ }
+      return false
+    }
+    void (async () => {
+      const pipWin = pipWindowRef.current
+      if (pipWin && !pipWin.closed) {
+        if (await tryWrite(pipWin)) return
+      }
+      await tryWrite(window)
+    })()
+  }, [clipboardContent])
 
   // Auto-open PiP when tab hides during streaming
   useEffect(() => {
