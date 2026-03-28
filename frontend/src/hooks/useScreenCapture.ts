@@ -71,7 +71,7 @@ export function useScreenCapture({
         : ANALYSIS_SYSTEM_PROMPT
 
       const response = await client.models.generateContent({
-        model: 'gemini-2.0-flash',
+        model: 'gemini-3.1-pro-preview',
         config: { systemInstruction },
         contents: [
           {
