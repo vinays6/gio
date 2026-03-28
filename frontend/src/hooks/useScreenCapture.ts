@@ -5,9 +5,11 @@ import { ANALYSIS_SYSTEM_PROMPT } from '../constants'
 export function useScreenCapture({
   getApiKey,
   applyPrompt,
+  userPreferences,
 }: {
   getApiKey: () => string
   applyPrompt: (prompt: string) => Promise<void>
+  userPreferences?: string | null
 }) {
   const [captureOn, setCaptureOn] = useState(false)
   const [latestScreenshot, setLatestScreenshot] = useState<string | null>(null)
@@ -43,9 +45,14 @@ export function useScreenCapture({
 
       const base64Data = screenshotDataUrl.replace(/^data:image\/jpeg;base64,/, '')
       const client = new GoogleGenAI({ apiKey })
+      
+      const systemInstruction = userPreferences 
+        ? `${ANALYSIS_SYSTEM_PROMPT}\n\nUSER MUSIC PREFERENCES:\nThe user has the following music preferences: "${userPreferences}". You MUST factor these preferences into your decision when recommending a new music descriptor.` 
+        : ANALYSIS_SYSTEM_PROMPT
+
       const response = await client.models.generateContent({
         model: 'gemini-3.1-pro-preview',
-        config: { systemInstruction: ANALYSIS_SYSTEM_PROMPT },
+        config: { systemInstruction },
         contents: [
           {
             role: 'user',
@@ -79,7 +86,7 @@ export function useScreenCapture({
     } finally {
       isAnalyzing.current = false
     }
-  }, [applyPrompt, currentMusicPrompt, getApiKey])
+  }, [applyPrompt, currentMusicPrompt, getApiKey, userPreferences])
 
   // Keep ref up to date to avoid stale closures in interval
   useEffect(() => {

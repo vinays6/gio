@@ -1,3 +1,4 @@
+import { useUser } from './hooks/useUser'
 import { useLyriaStream } from './hooks/useLyriaStream'
 import { useScreenCapture } from './hooks/useScreenCapture'
 import { useGioSession } from './hooks/useGioSession'
@@ -8,8 +9,14 @@ import './index.css'
 function App() {
   const getApiKey = () => import.meta.env.VITE_GEMINI_API_KEY?.trim() ?? ''
 
+  const { user, loading: userLoading, setPreferences } = useUser()
+
   const lyria = useLyriaStream(getApiKey)
-  const capture = useScreenCapture({ getApiKey, applyPrompt: lyria.applyPrompt })
+  const capture = useScreenCapture({
+    getApiKey,
+    applyPrompt: lyria.applyPrompt,
+    userPreferences: user?.preferences,
+  })
   const gio = useGioSession({ getApiKey, fadeVolume: lyria.fadeVolume, latestScreenshot: capture.latestScreenshot })
 
   const pip = useDocumentPiP(
@@ -84,6 +91,9 @@ function App() {
         isDocumentPiPSupported={pip.isDocumentPiPSupported}
         openDocumentPiP={pip.openDocumentPiP}
         pipMessage={pip.pipMessage}
+        user={user}
+        userLoading={userLoading}
+        setPreferences={setPreferences}
       />
       {/* Hidden elements for screen capture */}
       <video ref={capture.videoRef} style={{ display: 'none' }} muted playsInline />

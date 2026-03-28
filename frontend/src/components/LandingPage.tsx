@@ -4,6 +4,7 @@ import { MarqueeText } from './MarqueeText'
 import { AudioVisualizer } from './AudioVisualizer'
 import { ParticleCanvas } from './ParticleCanvas'
 import { esc } from '../constants'
+import type { User } from '../hooks/useUser'
 
 // Mic SVG icon
 function MicIcon({ size = 28 }: { size?: number }) {
@@ -83,6 +84,10 @@ interface LandingPageProps {
   isDocumentPiPSupported: boolean
   openDocumentPiP: () => void
   pipMessage: string
+  // User / backend
+  user: User | null
+  userLoading: boolean
+  setPreferences: (prefs: string) => Promise<boolean>
 }
 
 const MODELS = [
@@ -109,8 +114,11 @@ export function LandingPage({
   isGioActive, startGioSession, endGioSession, gioTranscript, clipboardContent,
   gioError, setClipboardContent, pendingClipboardWriteRef,
   isDocumentPiPSupported, openDocumentPiP, pipMessage,
+  user, userLoading, setPreferences,
 }: LandingPageProps) {
   const [debugOpen, setDebugOpen] = useState(false)
+  const [prefsInput, setPrefsInput] = useState('')
+  const [prefsSaved, setPrefsSaved] = useState(false)
   const isConnected = status === 'streaming' || status === 'paused'
   const isPlaying = status === 'streaming'
 
@@ -172,6 +180,15 @@ export function LandingPage({
             </button>
           )}
         </div>
+        {/* User status */}
+        {!userLoading && (
+          <div style={{ textAlign: 'center', marginBottom: 8, fontSize: 12, color: 'var(--text-muted)' }}>
+            {user
+              ? <span>Signed in as <strong style={{ color: 'var(--text-primary)' }}>{user.name || user.email}</strong></span>
+              : <a href="/login" style={{ color: 'var(--gio-green)', textDecoration: 'none', fontWeight: 600 }}>Sign in with Google</a>
+            }
+          </div>
+        )}
         {pipMessage && <p style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 12, marginBottom: 16 }}>{pipMessage}</p>}
         {error && (
           <div style={{ marginBottom: 16, padding: '12px 16px', border: '1px solid rgba(234,67,53,0.3)', borderRadius: 12, background: 'rgba(234,67,53,0.08)', color: '#fca5a5', fontSize: 13 }}>
@@ -400,6 +417,41 @@ export function LandingPage({
                   >Apply settings</button>
                 </div>
               </details>
+
+              {/* Music preferences (only shown when signed in) */}
+              {user && (
+                <details style={{ marginTop: 8 }}>
+                  <summary style={{ fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer', userSelect: 'none' }}>Music preferences</summary>
+                  <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6 }}>
+                    <p style={{ margin: 0, fontSize: 11, color: 'var(--text-subtle)' }}>
+                      Describe your music taste. Gemini will factor this in when choosing music.
+                    </p>
+                    <textarea
+                      rows={2}
+                      value={prefsInput || user.preferences || ''}
+                      onChange={e => { setPrefsInput(e.target.value); setPrefsSaved(false) }}
+                      style={{
+                        width: '100%', boxSizing: 'border-box', background: 'var(--surface-hover)',
+                        border: '1px solid var(--border)', borderRadius: 8, padding: '6px 8px',
+                        color: 'var(--text-primary)', fontSize: 12, fontFamily: 'var(--sans)', resize: 'vertical', outline: 'none',
+                      }}
+                      placeholder="e.g. I love lo-fi hip hop and calm jazz…"
+                    />
+                    <button
+                      onClick={async () => {
+                        const ok = await setPreferences(prefsInput || user.preferences || '')
+                        if (ok) setPrefsSaved(true)
+                      }}
+                      style={{
+                        padding: '6px 12px', borderRadius: 8, border: '1px solid var(--gio-green)',
+                        background: prefsSaved ? 'rgba(52,168,83,0.18)' : 'var(--surface-hover)',
+                        color: prefsSaved ? 'var(--gio-green)' : 'var(--text-primary)',
+                        fontSize: 12, fontWeight: 600, cursor: 'pointer',
+                      }}
+                    >{prefsSaved ? 'Saved!' : 'Save preferences'}</button>
+                  </div>
+                </details>
+              )}
             </div>
           </div>
 
