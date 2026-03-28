@@ -801,16 +801,6 @@ function App() {
           </button>
         </div>
 
-        <div className="capture-row">
-          <button
-            className={captureOn ? 'primary-button capture-toggle' : 'secondary-button capture-toggle'}
-            onClick={() => void toggleCapture()}
-          >
-            {captureOn ? 'Turn me off' : 'Turn me on'}
-          </button>
-          <p className="capture-status">{captureStatus}</p>
-        </div>
-
         <p className="helper-copy">
           Use `VITE_GEMINI_API_KEY` in your local environment. When supported, the app
           will try to move into Document Picture-in-Picture if you switch away while
@@ -822,31 +812,50 @@ function App() {
       </section>
 
       <section className="controls-grid">
-        <section className="control-card">
-          <div className="card-heading">
-            <p className="card-kicker">Prompt</p>
-            <h2>Shape the track</h2>
-          </div>
+        <div className="controls-column">
+          <section className="control-card control-card-half">
+            <div className="card-heading">
+              <p className="card-kicker">Prompt</p>
+              <h2>Shape the track</h2>
+            </div>
 
-          <label className="field-label" htmlFor="prompt">
-            Weighted prompt
-          </label>
-          <textarea
-            id="prompt"
-            className="text-input prompt-input"
-            value={prompt}
-            onChange={(event) => setPrompt(event.target.value)}
-            placeholder="Describe the sound you want Lyria to generate."
-            rows={5}
-          />
-          <button
-            className="secondary-button full-width"
-            disabled={!sessionRef.current}
-            onClick={() => void syncPrompt()}
-          >
-            Apply prompt
-          </button>
-        </section>
+            <label className="field-label" htmlFor="prompt">
+              Weighted prompt
+            </label>
+            <textarea
+              id="prompt"
+              className="text-input prompt-input prompt-input-compact"
+              value={prompt}
+              onChange={(event) => setPrompt(event.target.value)}
+              placeholder="Describe the sound you want Lyria to generate."
+              rows={3}
+            />
+            <button
+              className="secondary-button full-width"
+              disabled={!sessionRef.current}
+              onClick={() => void syncPrompt()}
+            >
+              Apply prompt
+            </button>
+          </section>
+
+          <section className="control-card control-card-half">
+            <div className="card-heading">
+              <p className="card-kicker">Capture</p>
+              <h2>Activity Monitor</h2>
+            </div>
+
+            <div className="capture-row">
+              <button
+                className={captureOn ? 'primary-button capture-toggle' : 'secondary-button capture-toggle'}
+                onClick={() => void toggleCapture()}
+              >
+                {captureOn ? 'Turn off Activity Monitor' : 'Activity Monitor'}
+              </button>
+              <p className="capture-status">{captureStatus}</p>
+            </div>
+          </section>
+        </div>
 
         <section className="control-card">
           <div className="card-heading">

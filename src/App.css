@@ -65,7 +65,8 @@
 
 .status-row,
 .cta-row,
-.controls-grid {
+.controls-grid,
+.controls-column {
   display: grid;
   gap: 14px;
 }
@@ -190,6 +191,16 @@
   text-align: left;
 }
 
+.controls-column {
+  min-height: 100%;
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+}
+
+.control-card-half {
+  display: flex;
+  flex-direction: column;
+}
+
 .card-heading {
   margin-bottom: 22px;
 }
@@ -254,6 +265,10 @@
   margin-bottom: 18px;
 }
 
+.prompt-input-compact {
+  min-height: 84px;
+}
+
 .range-input {
   margin: 4px 0 8px;
   accent-color: #fb7185;
@@ -301,6 +316,10 @@
 
   .controls-grid {
     grid-template-columns: 1fr;
+  }
+
+  .controls-column {
+    grid-template-rows: none;
   }
 
   .status-row,
