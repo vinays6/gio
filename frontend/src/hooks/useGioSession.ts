@@ -8,11 +8,15 @@ export function useGioSession({
   fadeVolume,
   latestScreenshot,
   activateLock,
+  setPreferences,
+  userPreferences,
 }: {
   getApiKey: () => string
   fadeVolume: (targetVolume: number, durationMs: number) => void
   latestScreenshot: string | null
   activateLock: (prompt: string, minutes: number) => void
+  setPreferences: (prefs: string) => Promise<boolean>
+  userPreferences?: string | null
 }) {
   const [isGioActive, setIsGioActive] = useState(false)
   const [gioTranscript, setGioTranscript] = useState('')
@@ -120,18 +124,10 @@ export function useGioSession({
       try {
         const pref = JSON.parse(prefMatch[1].trim()) as { action: string; genre: string; context: string }
         const label = `${pref.action === 'no' ? 'No' : 'Yes'} ${pref.genre} while ${pref.context}`
-        fetch('/api/user')
-          .then(r => r.ok ? r.json() : Promise.reject(r))
-          .then((userData: { preferences?: string | null }) => {
-            const existing = userData.preferences ? userData.preferences.trim() : ''
-            const next = existing ? `${existing}\n${label}` : label
-            return fetch('/api/user/preferences', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ preferences: next }),
-            })
-          })
-          .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`) })
+        const existing = userPreferences ? userPreferences.trim() : ''
+        const next = existing ? `${existing}\n${label}` : label
+        setPreferences(next)
+          .then(ok => { if (!ok) throw new Error('save returned false') })
           .catch((err) => {
             console.error('[Gio] Preference save failed:', err)
             setGioError('Preference could not be saved')
@@ -146,7 +142,7 @@ export function useGioSession({
     cleaned = cleaned.replace(/<<<LOCK_START>>>[\s\S]*?<<<LOCK_END>>>/g, '').trim()
 
     return cleaned
-  }, [])
+  }, [userPreferences, setPreferences])
 
   const endGioSession = useCallback(async () => {
     // Always attempt clipboard write first — this runs with a user gesture

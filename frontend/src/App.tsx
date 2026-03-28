@@ -17,7 +17,7 @@ function App() {
     applyPrompt: lyria.applyPrompt,
     userPreferences: user?.preferences,
   })
-  const gio = useGioSession({ getApiKey, fadeVolume: lyria.fadeVolume, latestScreenshot: capture.latestScreenshot, activateLock: capture.activateLock })
+  const gio = useGioSession({ getApiKey, fadeVolume: lyria.fadeVolume, latestScreenshot: capture.latestScreenshot, activateLock: capture.activateLock, setPreferences, userPreferences: user?.preferences })
 
   const pip = useDocumentPiP(
     {
