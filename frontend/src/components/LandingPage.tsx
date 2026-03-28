@@ -272,15 +272,11 @@ export function LandingPage({
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
               <button
                 className={`gio-mic-btn${isGioActive ? ' active' : ''}`}
-                onMouseDown={startGioSession}
-                onMouseUp={endGioSession}
-                onTouchStart={startGioSession}
-                onTouchEnd={endGioSession}
-                onClick={e => e.preventDefault()}
+                onClick={() => isGioActive ? endGioSession() : startGioSession()}
               >
                 <MicIcon size={32} />
               </button>
-              <p style={{ margin: 0, fontSize: 11, color: 'var(--text-muted)' }}>Hold to talk to Gio</p>
+              <p style={{ margin: 0, fontSize: 11, color: 'var(--text-muted)' }}>{isGioActive ? 'Tap to stop Gio' : 'Tap to talk to Gio'}</p>
               {gioError && <p style={{ margin: 0, fontSize: 11, color: '#fca5a5' }}>{gioError}</p>}
             </div>
             {(gioTranscript || clipboardContent) && (
