@@ -13,7 +13,7 @@ import './App.css'
 // ─── constants ────────────────────────────────────────────────────────────────
 
 const MODEL = 'models/lyria-realtime-exp'
-const GIO_MODEL = 'gemini-2.5-flash-native-audio'
+const GIO_MODEL = 'gemini-3.1-flash-live-preview'
 const SAMPLE_RATE = 48000
 const CHANNELS = 2
 const DEFAULT_BPM = 90
@@ -83,8 +83,8 @@ type DocumentPictureInPictureController = {
 declare global {
   interface Window {
     documentPictureInPicture?: DocumentPictureInPictureController
-    SpeechRecognition?: new () => SpeechRecognition
-    webkitSpeechRecognition?: new () => SpeechRecognition
+    SpeechRecognition?: new () => any
+    webkitSpeechRecognition?: new () => any
   }
 }
 
@@ -341,7 +341,7 @@ function App() {
       const base64Data = screenshotDataUrl.replace(/^data:image\/jpeg;base64,/, '')
       const client = new GoogleGenAI({ apiKey })
       const response = await client.models.generateContent({
-        model: 'gemini-2.5-flash',
+        model: 'gemini-3.1-pro-preview',
         config: { systemInstruction: ANALYSIS_SYSTEM_PROMPT },
         contents: [{
           role: 'user',
@@ -465,11 +465,11 @@ function App() {
       gioMicStreamRef.current = micStream
 
       // Gemini Live connection
-      const client = new GoogleGenAI({ apiKey })
+      const client = new GoogleGenAI({ apiKey, apiVersion: 'v1alpha' })
       const session = await client.live.connect({
         model: GIO_MODEL,
         config: {
-          responseModalities: [Modality.AUDIO, Modality.TEXT],
+          responseModalities: [Modality.AUDIO],
           systemInstruction: GIO_SYSTEM_PROMPT,
         },
         callbacks: {
@@ -497,8 +497,9 @@ function App() {
             isGioActiveRef.current = false
             setIsGioActive(false)
           },
-          onclose: () => {
-            console.log('[Gio] Session closed')
+          onclose: (event?: CloseEvent) => {
+            console.log('[Gio] Session closed', event?.code, event?.reason)
+            gioSessionRef.current = null
             if (isGioActiveRef.current) {
               fadeVolume(1.0, 800)
               isGioActiveRef.current = false
@@ -537,7 +538,7 @@ function App() {
       const processor = micContext.createScriptProcessor(2048, 1, 1)
 
       processor.onaudioprocess = (event: AudioProcessingEvent) => {
-        if (!gioSessionRef.current) return
+        if (!gioSessionRef.current || !isGioActiveRef.current) return
         const inputData = event.inputBuffer.getChannelData(0)
         const pcm16 = new Int16Array(inputData.length)
         for (let i = 0; i < inputData.length; i++) {
@@ -547,9 +548,13 @@ function App() {
         const bytes = new Uint8Array(pcm16.buffer)
         let binary = ''
         for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i])
-        gioSessionRef.current.sendRealtimeInput({
-          audio: { data: btoa(binary), mimeType: `audio/pcm;rate=${actualRate}` },
-        })
+        try {
+          gioSessionRef.current.sendRealtimeInput({
+            audio: { data: btoa(binary), mimeType: `audio/pcm;rate=${actualRate}` },
+          })
+        } catch {
+          // session may have closed between the guard check and this call — ignore
+        }
       }
 
       micSource.connect(processor)
@@ -1262,10 +1267,13 @@ function App() {
       }
     }
 
-    // Keep listening by restarting on end
+    // Keep listening by restarting on end; back off 1 s on network errors to avoid spam
+    let wakeRestartTimer: ReturnType<typeof setTimeout> | null = null
     recognition.onend = () => {
       if (!isUnmountingRef.current) {
-        try { recognition.start() } catch { /* ignore race condition */ }
+        wakeRestartTimer = setTimeout(() => {
+          try { recognition.start() } catch { /* ignore race condition */ }
+        }, 1000)
       }
     }
 
@@ -1277,6 +1285,7 @@ function App() {
     }
 
     return () => {
+      if (wakeRestartTimer) clearTimeout(wakeRestartTimer)
       recognition.onend = null
       try { recognition.stop() } catch { /* ignore */ }
     }
@@ -1509,7 +1518,7 @@ function App() {
         <h2 className="powered-by-heading">Powered by</h2>
         <div className="powered-by-grid">
           <div className="powered-by-card">
-            <p className="powered-by-model">gemini-2.5-flash</p>
+            <p className="powered-by-model">gemini-3.1-pro-preview</p>
             <p className="powered-by-desc">Vision analysis and music direction</p>
             <div className="powered-by-badges">
               <span className="powered-by-badge badge-ai">Vision</span>
@@ -1517,7 +1526,7 @@ function App() {
             </div>
           </div>
           <div className="powered-by-card">
-            <p className="powered-by-model">gemini-2.5-flash-native-audio</p>
+            <p className="powered-by-model">gemini-3.1-flash-live-preview</p>
             <p className="powered-by-desc">Push-to-talk voice assistant (Gio)</p>
             <div className="powered-by-badges">
               <span className="powered-by-badge badge-ai">Live Audio</span>
